@@ -54,7 +54,7 @@ async def read_root():
             .dropdown-content a:hover { background-color: #2b2c2d; color: #fff; }
             .show { display: block !important; }
 
-            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; padding-bottom: 110px; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; padding-bottom: 130px; }
             .msg { padding: 12px 18px; border-radius: 15px; max-width: 85%; font-size: 15px; line-height: 1.5; word-break: break-word; }
             .user { background: #2b2c2d; align-self: flex-end; color: white; }
             .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
@@ -62,13 +62,20 @@ async def read_root():
             .bot code { font-family: monospace; color: #a8c7fa; font-size: 14px; }
             .msg img { max-width: 200px; border-radius: 8px; margin-top: 5px; display: block; }
 
-            /* Fixed Bottom Search / Input Container - Raised up nicely above mobile navigation buttons */
-            .input-container { position: absolute; bottom: 18px; left: 0; width: 100%; padding: 0 15px; background: transparent; display: flex; justify-content: center; z-index: 4000; }
-            .input-box { background: #1e1e1f; padding: 8px 15px; border-radius: 30px; display: flex; align-items: center; border: 1px solid #444; width: 100%; max-width: 800px; gap: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
-            input[type="text"] { flex: 1; background: transparent; border: none; color: white; outline: none; font-size: 16px; padding: 8px 4px; }
-            .icon-btn { background: transparent; border: none; color: #aaa; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; padding: 6px; }
+            /* Fixed Bottom Search / Input Container */
+            .input-container { position: absolute; bottom: 15px; left: 0; width: 100%; padding: 0 12px; background: transparent; display: flex; flex-direction: column; gap: 8px; align-items: center; z-index: 4000; }
+            
+            /* Image Preview Container inside Input area */
+            #image-preview-container { display: none; width: 100%; max-width: 800px; background: #1e1e1f; padding: 8px 12px; border-radius: 12px; border: 1px solid #444; align-items: center; gap: 10px; }
+            #image-preview-container img { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; }
+            #image-preview-container span { font-size: 13px; color: #aaa; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            #image-preview-container button { background: #333; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+
+            .input-box { background: #1e1e1f; padding: 6px 10px; border-radius: 30px; display: flex; align-items: center; border: 1px solid #444; width: 100%; max-width: 800px; gap: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+            input[type="text"] { flex: 1; background: transparent; border: none; color: white; outline: none; font-size: 16px; padding: 8px 4px; min-width: 0; }
+            .icon-btn { background: transparent; border: none; color: #aaa; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; padding: 6px; flex-shrink: 0; }
             .icon-btn:hover { color: white; }
-            .send { background: #ff4444; color: white; border: none; width: 38px; height: 38px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; }
+            .send { background: #ff4444; color: white; border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; }
 
             /* Modal Styling */
             #auth-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 7000; justify-content: center; align-items: center; }
@@ -111,6 +118,13 @@ async def read_root():
             </div>
 
             <div class="input-container">
+                <!-- Image Preview Preview Box (Appears right above search bar when image is selected) -->
+                <div id="image-preview-container">
+                    <img id="preview-img" src="" alt="Preview">
+                    <span id="preview-name">Image selected</span>
+                    <button onclick="removeImage()">✕ Remove</button>
+                </div>
+
                 <div class="input-box">
                     <input type="file" id="file-input" style="display:none" accept="image/*" onchange="handleFileSelect(event)">
                     <button class="icon-btn" title="Upload Image" onclick="document.getElementById('file-input').click()">➕</button>
@@ -121,6 +135,7 @@ async def read_root():
             </div>
         </div>
 
+        <!-- Auth / Modal -->
         <div id="auth-modal">
             <div class="modal-content">
                 <h2 id="modal-title">Nirale AI Login</h2>
@@ -221,14 +236,22 @@ async def read_root():
                 const reader = new FileReader();
                 reader.onload = function(e) {
                     selectedFileBase64 = e.target.result;
-                    alert("Image attached successfully: " + file.name);
+                    document.getElementById('preview-img').src = selectedFileBase64;
+                    document.getElementById('preview-name').innerText = file.name;
+                    document.getElementById('image-preview-container').style.display = 'flex';
                 };
                 reader.readAsDataURL(file);
             }
 
+            function removeImage() {
+                selectedFileBase64 = null;
+                document.getElementById('image-preview-container').style.display = 'none';
+                document.getElementById('file-input').value = '';
+            }
+
             function newChat() {
                 document.getElementById('chatbox').innerHTML = '<div class="msg bot">Hello! I am Nirale AI. Ask me anything or upload images to get started.</div>';
-                selectedFileBase64 = null;
+                removeImage();
                 document.getElementById('sidebar').classList.remove('open');
             }
 
@@ -255,7 +278,7 @@ async def read_root():
             function startSpeech() {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                 if (!SpeechRecognition) {
-                    alert("Speech recognition not supported.");
+                    alert("Speech recognition not supported in this browser.");
                     return;
                 }
                 const recognition = new SpeechRecognition();
@@ -297,7 +320,7 @@ async def read_root():
                 
                 input.value = '';
                 let currentFile = selectedFileBase64;
-                selectedFileBase64 = null;
+                removeImage();
 
                 const botDiv = document.createElement('div');
                 botDiv.className = 'msg bot';
