@@ -22,6 +22,7 @@ async def read_root():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Nirale AI</title>
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
+        <script src="https://accounts.google.com/gsi/client" async defer></script>
         <style>
             body { background: #131314; color: #e3e3e3; font-family: sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; }
             
@@ -34,9 +35,12 @@ async def read_root():
             .history-item { padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             .history-item:hover { background: #2a2b2c; color: white; }
 
+            /* Top Bar & Login */
+            #top-bar { position: absolute; top: 15px; right: 20px; display: flex; align-items: center; z-index: 10; }
+
             /* Main Chat Area Styling */
-            #main-chat { flex: 1; display: flex; flex-direction: column; height: 100vh; background: #131314; }
-            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+            #main-chat { flex: 1; display: flex; flex-direction: column; height: 100vh; background: #131314; position: relative; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 20px; padding-top: 60px; display: flex; flex-direction: column; gap: 15px; }
             .msg { padding: 12px 18px; border-radius: 15px; max-width: 80%; font-size: 15px; line-height: 1.5; word-break: break-word; }
             .user { background: #2b2c2d; align-self: flex-end; color: white; }
             .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
@@ -62,6 +66,15 @@ async def read_root():
 
         <!-- Main Chat -->
         <div id="main-chat">
+            <!-- Google Login Button Top Right -->
+            <div id="top-bar">
+                <div id="g_id_onload"
+                     data-client_id="871572564566-kuia506dos7nl6asrotga5t0ii44f0n7.apps.googleusercontent.com"
+                     data-callback="handleCredentialResponse">
+                </div>
+                <div class="g_id_signin" data-type="standard" data-shape="pill" data-theme="filled_black"></div>
+            </div>
+
             <div id="chatbox">
                 <div class="msg bot">Hello! Ask me any Linux or programming commands, and I will format them properly for you.</div>
             </div>
@@ -76,7 +89,10 @@ async def read_root():
         </div>
 
         <script>
-            let chatHistory = [];
+            function handleCredentialResponse(response) {
+                console.log("Encoded JWT ID token: " + response.credential);
+                alert("Successfully logged in with Google!");
+            }
 
             function newChat() {
                 document.getElementById('chatbox').innerHTML = '<div class="msg bot">Hello! Ask me any Linux or programming commands, and I will format them properly for you.</div>';
