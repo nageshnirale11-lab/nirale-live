@@ -97,7 +97,6 @@ async def read_root():
             let isPro = localStorage.getItem('is_pro') === 'true';
 
             function proceedToPayment() {
-                // ಇಲ್ಲಿ ನಿಮ್ಮ ರೇಜರ್‌ಪೇ ಅಥವಾ ಯುಪಿಐ ಪೇಮೆಂಟ್ ಲಿಂಕ್ ಹಾಕಬಹುದು
                 window.location.href = "https://razorpay.com"; 
             }
 
