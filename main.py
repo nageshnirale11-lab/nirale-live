@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 app = FastAPI()
 
+# Configure Gemini API safely
 api_key = os.getenv("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
@@ -99,6 +100,8 @@ async def chat(request: ChatRequest):
     try:
         if not api_key:
             return {"reply": "API key not configured on server."}
+        
+        # Using gemini-1.5-flash for fast and reliable responses
         model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(request.message)
         return {"reply": response.text}
