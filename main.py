@@ -82,41 +82,6 @@ async def read_root():
                 }
             };
 
-            const micBtn = document.getElementById('micBtn');
-            const msgInput = document.getElementById('msg');
-            try {
-                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-                if (SpeechRecognition) {
-                    const recognition = new SpeechRecognition();
-                    recognition.continuous = false;
-                    recognition.interimResults = false;
-                    recognition.lang = 'en-US';
-
-                    micBtn.onclick = () => {
-                        recognition.start();
-                        micBtn.classList.add('listening');
-                    };
-
-                    recognition.onresult = (event) => {
-                        const transcript = event.results[0][0].transcript;
-                        msgInput.value = transcript;
-                        micBtn.classList.remove('listening');
-                    };
-
-                    recognition.onerror = () => {
-                        micBtn.classList.remove('listening');
-                    };
-
-                    recognition.onend = () => {
-                        micBtn.classList.remove('listening');
-                    };
-                } else {
-                    micBtn.onclick = () => alert('Speech recognition is not supported in this browser.');
-                }
-            } catch(e) {
-                micBtn.onclick = () => alert('Mic error occurred.');
-            }
-
             async function send() {
                 const input = document.getElementById('msg');
                 const chat = document.getElementById('chatbox');
@@ -167,7 +132,7 @@ async def chat(request: ChatRequest):
         if any(q in user_msg for q in ["what languages", "yava bashe", "language"]):
             return {"reply": "I can understand and communicate in many languages including Kannada, English, Hindi, and more."}
 
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(request.message)
         return {"reply": response.text}
     except Exception as e:
