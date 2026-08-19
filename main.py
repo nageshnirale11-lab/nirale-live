@@ -23,13 +23,26 @@ async def read_root():
         <title>Nirale AI</title>
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
         <style>
-            body { background: #131314; color: #e3e3e3; font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+            body { background: #131314; color: #e3e3e3; font-family: sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; }
+            
+            /* Sidebar Styling */
+            #sidebar { width: 260px; background: #1e1e1f; border-right: 1px solid #333; display: flex; flex-direction: column; padding: 15px; gap: 15px; }
+            .new-chat-btn { background: #2b2c2d; color: white; border: 1px solid #444; padding: 10px 15px; border-radius: 20px; cursor: pointer; text-align: left; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+            .new-chat-btn:hover { background: #3c3d3e; }
+            .history-title { font-size: 12px; color: #aaa; margin-top: 10px; text-transform: uppercase; letter-spacing: 1px; }
+            #history-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; }
+            .history-item { padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .history-item:hover { background: #2a2b2c; color: white; }
+
+            /* Main Chat Area Styling */
+            #main-chat { flex: 1; display: flex; flex-direction: column; height: 100vh; background: #131314; }
             #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
-            .msg { padding: 12px 18px; border-radius: 15px; max-width: 85%; font-size: 15px; line-height: 1.5; word-break: break-word; }
+            .msg { padding: 12px 18px; border-radius: 15px; max-width: 80%; font-size: 15px; line-height: 1.5; word-break: break-word; }
             .user { background: #2b2c2d; align-self: flex-end; color: white; }
             .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
             .bot pre { background: #000000; padding: 12px; border-radius: 8px; overflow-x: auto; border: 1px solid #444; margin: 8px 0; }
             .bot code { font-family: monospace; color: #a8c7fa; font-size: 14px; }
+            
             .input-container { padding: 15px 20px; background: #131314; display: flex; justify-content: center; }
             .input-box { background: #1e1e1f; padding: 8px 15px; border-radius: 30px; display: flex; align-items: center; border: 1px solid #444; width: 100%; max-width: 800px; gap: 10px; }
             input[type="text"] { flex: 1; background: transparent; border: none; color: white; outline: none; font-size: 15px; padding: 5px; }
@@ -39,40 +52,57 @@ async def read_root():
         </style>
     </head>
     <body>
-        <div id="chatbox">
-            <div class="msg bot">Hello! Ask me any Linux or programming commands, and I will format them properly for you.</div>
+
+        <!-- Sidebar -->
+        <div id="sidebar">
+            <button class="new-chat-btn" onclick="newChat()">＋ New Chat</button>
+            <div class="history-title">Recent Chats</div>
+            <div id="history-list"></div>
         </div>
-        <div class="input-container">
-            <div class="input-box">
-                <button class="icon-btn" title="Add attachments" onclick="alert('Attachments feature coming soon!')">+</button>
-                <input type="text" id="msg" placeholder="Ask Nirale AI..." onkeypress="if(event.key === 'Enter') send()">
-                <button class="icon-btn" id="mic-btn" title="Use microphone" onclick="startSpeech()">🎤</button>
-                <button class="send" onclick="send()">➔</button>
+
+        <!-- Main Chat -->
+        <div id="main-chat">
+            <div id="chatbox">
+                <div class="msg bot">Hello! Ask me any Linux or programming commands, and I will format them properly for you.</div>
+            </div>
+            <div class="input-container">
+                <div class="input-box">
+                    <button class="icon-btn" title="Add attachments" onclick="alert('Attachments feature coming soon!')">+</button>
+                    <input type="text" id="msg" placeholder="Ask Nirale AI..." onkeypress="if(event.key === 'Enter') send()">
+                    <button class="icon-btn" id="mic-btn" title="Use microphone" onclick="startSpeech()">🎤</button>
+                    <button class="send" onclick="send()">➔</button>
+                </div>
             </div>
         </div>
+
         <script>
+            let chatHistory = [];
+
+            function newChat() {
+                document.getElementById('chatbox').innerHTML = '<div class="msg bot">Hello! Ask me any Linux or programming commands, and I will format them properly for you.</div>';
+            }
+
+            function addHistory(text) {
+                const list = document.getElementById('history-list');
+                const item = document.createElement('div');
+                item.className = 'history-item';
+                item.textContent = text;
+                item.onclick = function() {
+                    document.getElementById('msg').value = text;
+                };
+                list.prepend(item);
+            }
+
             function startSpeech() {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                 if (!SpeechRecognition) {
-                    alert("Speech recognition is not supported in this browser. Try Chrome.");
+                    alert("Speech recognition not supported. Use Chrome.");
                     return;
                 }
                 const recognition = new SpeechRecognition();
                 recognition.lang = 'en-US';
-                recognition.onstart = function() {
-                    document.getElementById('msg').placeholder = "Listening...";
-                };
                 recognition.onresult = function(event) {
-                    const speechToText = event.results[0][0].transcript;
-                    document.getElementById('msg').value = speechToText;
-                    document.getElementById('msg').placeholder = "Ask Nirale AI...";
-                };
-                recognition.onerror = function() {
-                    document.getElementById('msg').placeholder = "Ask Nirale AI...";
-                    alert("Microphone error or permission denied.");
-                };
-                recognition.onend = function() {
-                    document.getElementById('msg').placeholder = "Ask Nirale AI...";
+                    document.getElementById('msg').value = event.results[0][0].transcript;
                 };
                 recognition.start();
             }
@@ -84,6 +114,7 @@ async def read_root():
                 if(!text) return;
 
                 chat.innerHTML += '<div class="msg user">' + text + '</div>';
+                addHistory(text);
                 input.value = '';
 
                 const botDiv = document.createElement('div');
