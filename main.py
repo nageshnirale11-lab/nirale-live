@@ -26,10 +26,10 @@ async def read_root():
         <meta name="description" content="Nirale AI - Advanced Artificial Intelligence Platform">
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
         <style>
-            * { box-sizing: border-box; }
-            body { background: #131314; color: #e3e3e3; font-family: sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; }
+            * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+            html, body { background: #131314; color: #e3e3e3; font-family: sans-serif; margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; position: fixed; }
             
-            #sidebar { width: 260px; background: #1e1e1f; border-right: 1px solid #333; display: flex; flex-direction: column; padding: 15px; gap: 15px; z-index: 100; position: absolute; height: 100%; left: -260px; transition: left 0.3s ease; }
+            #sidebar { width: 260px; background: #1e1e1f; border-right: 1px solid #333; display: flex; flex-direction: column; padding: 15px; gap: 15px; z-index: 5000; position: fixed; height: 100%; left: -260px; top: 0; transition: left 0.3s ease; }
             #sidebar.open { left: 0; }
             .sidebar-header { display: flex; justify-content: space-between; align-items: center; }
             .logo-text { font-size: 16px; font-weight: bold; color: #fff; }
@@ -40,21 +40,21 @@ async def read_root():
             .history-item { padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             .history-item:hover { background: #2a2b2c; color: white; }
 
-            #main-chat { flex: 1; display: flex; flex-direction: column; height: 100vh; background: #131314; position: relative; width: 100%; }
+            #main-chat { display: flex; flex-direction: column; height: 100vh; width: 100vw; background: #131314; position: absolute; top: 0; left: 0; }
             
-            #top-nav { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid #222; background: #131314; }
-            .menu-btn { background: transparent; border: none; color: #aaa; font-size: 22px; cursor: pointer; padding: 5px; }
+            #top-nav { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid #222; background: #131314; min-height: 60px; }
+            .menu-btn { background: transparent; border: none; color: #aaa; font-size: 24px; cursor: pointer; padding: 5px; }
             .menu-btn:hover { color: #fff; }
             
             .dropdown { position: relative; display: inline-block; }
-            .dropbtn { background: transparent; border: none; color: #aaa; font-size: 22px; cursor: pointer; padding: 5px 12px; border-radius: 50%; }
+            .dropbtn { background: transparent; border: none; color: #aaa; font-size: 24px; cursor: pointer; padding: 8px 12px; border-radius: 50%; }
             .dropbtn:hover { background: #2b2c2d; color: #fff; }
-            .dropdown-content { display: none; position: absolute; right: 0; top: 40px; background-color: #1e1e1f; min-width: 180px; box-shadow: 0px 8px 16px rgba(0,0,0,0.6); z-index: 1000; border: 1px solid #444; border-radius: 10px; overflow: hidden; }
-            .dropdown-content a { color: #e3e3e3; padding: 12px 16px; text-decoration: none; display: block; font-size: 14px; }
+            .dropdown-content { display: none; position: absolute; right: 0; top: 45px; background-color: #1e1e1f; min-width: 210px; box-shadow: 0px 8px 16px rgba(0,0,0,0.8); z-index: 6000; border: 1px solid #444; border-radius: 12px; overflow: hidden; }
+            .dropdown-content a { color: #e3e3e3; padding: 14px 18px; text-decoration: none; display: block; font-size: 14px; border-bottom: 1px solid #2a2b2c; }
             .dropdown-content a:hover { background-color: #2b2c2d; color: #fff; }
-            .show { display: block; }
+            .show { display: block !important; }
 
-            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; padding-bottom: 110px; }
             .msg { padding: 12px 18px; border-radius: 15px; max-width: 85%; font-size: 15px; line-height: 1.5; word-break: break-word; }
             .user { background: #2b2c2d; align-self: flex-end; color: white; }
             .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
@@ -62,15 +62,16 @@ async def read_root():
             .bot code { font-family: monospace; color: #a8c7fa; font-size: 14px; }
             .msg img { max-width: 200px; border-radius: 8px; margin-top: 5px; display: block; }
 
-            .input-container { padding: 15px 20px; background: #131314; display: flex; justify-content: center; }
-            .input-box { background: #1e1e1f; padding: 8px 15px; border-radius: 30px; display: flex; align-items: center; border: 1px solid #444; width: 100%; max-width: 800px; gap: 10px; }
-            input[type="text"] { flex: 1; background: transparent; border: none; color: white; outline: none; font-size: 15px; padding: 5px; }
-            .icon-btn { background: transparent; border: none; color: #aaa; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; padding: 5px; }
+            /* Fixed Bottom Search / Input Container - Raised up nicely above mobile navigation buttons */
+            .input-container { position: absolute; bottom: 18px; left: 0; width: 100%; padding: 0 15px; background: transparent; display: flex; justify-content: center; z-index: 4000; }
+            .input-box { background: #1e1e1f; padding: 8px 15px; border-radius: 30px; display: flex; align-items: center; border: 1px solid #444; width: 100%; max-width: 800px; gap: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+            input[type="text"] { flex: 1; background: transparent; border: none; color: white; outline: none; font-size: 16px; padding: 8px 4px; }
+            .icon-btn { background: transparent; border: none; color: #aaa; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; padding: 6px; }
             .icon-btn:hover { color: white; }
-            .send { background: #ff4444; color: white; border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; }
+            .send { background: #ff4444; color: white; border: none; width: 38px; height: 38px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; }
 
             /* Modal Styling */
-            #auth-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 2000; justify-content: center; align-items: center; }
+            #auth-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 7000; justify-content: center; align-items: center; }
             .modal-content { background: #1e1e1f; padding: 30px; border-radius: 15px; border: 1px solid #444; width: 90%; max-width: 350px; display: flex; flex-direction: column; gap: 15px; text-align: center; }
             .modal-content h2 { color: white; margin: 0; font-size: 22px; }
             .modal-content p { color: #aaa; font-size: 14px; margin: 0; line-height: 1.5; }
@@ -98,9 +99,9 @@ async def read_root():
                 <div class="dropdown">
                     <button onclick="toggleDropdown(event)" class="dropbtn">⋮</button>
                     <div id="myDropdown" class="dropdown-content">
-                        <a href="#" onclick="openLoginModal()">🔐 Login / Signup</a>
-                        <a href="#" onclick="openUpgradeModal()">🌟 Upgrade to Pro (₹450 / 3 Months)</a>
-                        <a href="#" onclick="clearHistory()">🗑️ Clear History</a>
+                        <a href="javascript:void(0);" onclick="openLoginModal()">🔐 Login / Signup</a>
+                        <a href="javascript:void(0);" onclick="openUpgradeModal()">🌟 Upgrade to Pro (₹450 / 3M)</a>
+                        <a href="javascript:void(0);" onclick="clearHistory()">🗑️ Clear History</a>
                     </div>
                 </div>
             </div>
@@ -120,7 +121,6 @@ async def read_root():
             </div>
         </div>
 
-        <!-- Auth / Modal -->
         <div id="auth-modal">
             <div class="modal-content">
                 <h2 id="modal-title">Nirale AI Login</h2>
@@ -145,14 +145,18 @@ async def read_root():
 
             function toggleDropdown(event) {
                 event.stopPropagation();
-                document.getElementById("myDropdown").classList.toggle("show");
+                const dropdown = document.getElementById("myDropdown");
+                dropdown.classList.toggle("show");
             }
 
             window.onclick = function(event) {
                 if (!event.target.matches('.dropbtn') && !event.target.matches('.dropbtn *')) {
                     var dropdowns = document.getElementsByClassName("dropdown-content");
                     for (let i = 0; i < dropdowns.length; i++) {
-                        dropdowns[i].classList.remove('show');
+                        var openDropdown = dropdowns[i];
+                        if (openDropdown.classList.contains('show')) {
+                            openDropdown.classList.remove('show');
+                        }
                     }
                 }
             }
