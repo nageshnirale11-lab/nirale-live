@@ -44,13 +44,39 @@ async def read_root():
         </div>
         <div class="input-container">
             <div class="input-box">
-                <button class="icon-btn" title="Add attachments">+</button>
+                <button class="icon-btn" title="Add attachments" onclick="alert('Attachments feature coming soon!')">+</button>
                 <input type="text" id="msg" placeholder="Ask Nirale AI..." onkeypress="if(event.key === 'Enter') send()">
-                <button class="icon-btn" title="Use microphone">🎤</button>
+                <button class="icon-btn" id="mic-btn" title="Use microphone" onclick="startSpeech()">🎤</button>
                 <button class="send" onclick="send()">➔</button>
             </div>
         </div>
         <script>
+            function startSpeech() {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SpeechRecognition) {
+                    alert("Speech recognition is not supported in this browser. Try Chrome.");
+                    return;
+                }
+                const recognition = new SpeechRecognition();
+                recognition.lang = 'en-US';
+                recognition.onstart = function() {
+                    document.getElementById('msg').placeholder = "Listening...";
+                };
+                recognition.onresult = function(event) {
+                    const speechToText = event.results[0][0].transcript;
+                    document.getElementById('msg').value = speechToText;
+                    document.getElementById('msg').placeholder = "Ask Nirale AI...";
+                };
+                recognition.onerror = function() {
+                    document.getElementById('msg').placeholder = "Ask Nirale AI...";
+                    alert("Microphone error or permission denied.");
+                };
+                recognition.onend = function() {
+                    document.getElementById('msg').placeholder = "Ask Nirale AI...";
+                };
+                recognition.start();
+            }
+
             async function send() {
                 const input = document.getElementById('msg');
                 const chat = document.getElementById('chatbox');
@@ -92,4 +118,4 @@ async def chat(request: ChatRequest):
         response = model.generate_content(prompt)
         return {"reply": response.text}
     except Exception as e:
-        return {"reply": f"Error: {str(e)}"}
+        return {"reply": f"Server Error: {str(e)}"}
