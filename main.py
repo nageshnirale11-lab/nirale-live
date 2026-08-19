@@ -132,7 +132,7 @@ async def chat(request: ChatRequest):
         if any(q in user_msg for q in ["what languages", "yava bashe", "language"]):
             return {"reply": "I can understand and communicate in many languages including Kannada, English, Hindi, and more."}
 
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-3.6-flash')
         response = model.generate_content(request.message)
         return {"reply": response.text}
     except Exception as e:
