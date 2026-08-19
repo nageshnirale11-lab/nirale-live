@@ -1,6 +1,4 @@
 import os
-import base64
-from typing import Optional
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -10,12 +8,10 @@ from dotenv import load_dotenv
 load_dotenv()
 app = FastAPI()
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=API_KEY)
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 class ChatRequest(BaseModel):
     message: str
-    image_data: Optional[str] = None
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -23,100 +19,60 @@ async def read_root():
     <!DOCTYPE html>
     <html>
     <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Nirale AI</title>
+        <!-- Marked.js for Markdown parsing -->
+        <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
         <style>
-            body { background: #131314; color: #e3e3e3; font-family: Arial, sans-serif; display: flex; height: 100vh; margin: 0; overflow: hidden; }
-            #sidebar { width: 260px; background: #1e1e1f; padding: 20px; border-right: 1px solid #333; display: flex; flex-direction: column; justify-content: space-between; }
-            #main { flex: 1; display: flex; flex-direction: column; background: #131314; }
-            #chatbox { flex: 1; padding: 20px 15%; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
-            .msg { padding: 12px 18px; border-radius: 15px; max-width: 80%; line-height: 1.5; word-break: break-word; font-size: 15px; }
-            .user { background: #2b2c2d; align-self: flex-end; color: #fff; }
-            .bot { align-self: flex-start; color: #e3e3e3; background: #1e1e1f; border: 1px solid #333; }
-            .input-container { padding: 20px 15%; background: #131314; }
-            .input-box { background: #1e1e1f; padding: 10px 15px; border-radius: 30px; display: flex; align-items: center; gap: 10px; border: 1px solid #444; }
-            input[type="text"] { flex: 1; background: transparent; border: none; color: #fff; outline: none; font-size: 16px; padding: 5px; }
-            .icon-btn { background: transparent; border: none; color: #a8c7fa; font-size: 20px; cursor: pointer; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
-            .icon-btn:hover { background: #333; }
-            .send { background: #ff4444 !important; color: #fff; font-weight: bold; border-radius: 50%; pointer: pointer; width: 38px; height: 38px; border: none; display: flex; align-items: center; justify-content: center; }
-            .send:hover { background: #d3e3fd; }
-            .new-chat { color: #a8c7fa; cursor: pointer; font-size: 14px; text-decoration: underline; margin-top: 15px; display: inline-block; }
+            body { background: #131314; color: #e3e3e3; font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+            .msg { padding: 12px 18px; border-radius: 15px; max-width: 85%; font-size: 15px; line-height: 1.5; word-break: break-word; }
+            .user { background: #2b2c2d; align-self: flex-end; color: white; }
+            .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
+            .bot pre { background: #000; padding: 10px; border-radius: 8px; overflow-x: auto; border: 1px solid #444; }
+            .bot code { font-family: monospace; color: #a8c7fa; }
+            .input-area { padding: 20px; background: #131314; display: flex; gap: 10px; }
+            input { flex: 1; padding: 15px; border-radius: 25px; border: 1px solid #444; background: #1e1e1f; color: white; outline: none; }
+            button { padding: 10px 20px; border-radius: 25px; border: none; background: #ff4444; color: white; cursor: pointer; font-weight: bold; }
         </style>
     </head>
     <body>
-        <div id="sidebar">
-            <div>
-                <h2>✨ Nirale AI</h2>
-                <p class="new-chat" onclick="location.reload()">+ New Chat</p>
-            </div>
-            <div style="color: #777; font-size: 12px;">Secured & Protected</div>
+        <div id="chatbox">
+            <div class="msg bot">Hello! Ask me any Linux or programming commands, and I will format them properly for you.</div>
         </div>
-        <div id="main">
-            <div id="chatbox">
-                <div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>
-            </div>
-            <div class="input-container">
-                <div class="input-box">
-                    <button class="icon-btn" id="plusBtn" type="button" title="Upload Image">+</button>
-                    <input type="file" id="fileIn" style="display:none" accept="image/*">
-                    <input type="text" id="msg" placeholder="Ask Nirale AI...">
-                    <button class="icon-btn" id="micBtn" type="button" title="Voice Input">🎤</button>
-                    <button class="send" id="sendBtn" type="button">&#10140;</button>
-                </div>
-            </div>
+        <div class="input-area">
+            <input type="text" id="msg" placeholder="Ask Nirale AI..." onkeypress="if(event.key === 'Enter') send()">
+            <button onclick="send()">Send</button>
         </div>
-
         <script>
-            let imgBase64 = null;
-            document.getElementById('plusBtn').onclick = () => document.getElementById('fileIn').click();
-            document.getElementById('fileIn').onchange = (e) => {
-                const file = e.target.files[0];
-                if (file) {
-                    const reader = new FileReader();
-                    reader.onload = (ev) => {
-                        imgBase64 = ev.target.result.split(',')[1];
-                        const chat = document.getElementById('chatbox');
-                        chat.innerHTML += '<div class="msg user">Image attached: ' + file.name + '</div>';
-                        chat.scrollTop = chat.scrollHeight;
-                    };
-                    reader.readAsDataURL(file);
-                }
-            };
-
             async function send() {
                 const input = document.getElementById('msg');
                 const chat = document.getElementById('chatbox');
                 const text = input.value.trim();
-                if(!text && !imgBase64) return;
+                if(!text) return;
 
-                if(text) chat.innerHTML += '<div class="msg user">' + text + '</div>';
-                
-                const currentImg = imgBase64;
+                chat.innerHTML += '<div class="msg user">' + text + '</div>';
                 input.value = '';
-                imgBase64 = null;
-                document.getElementById('fileIn').value = '';
 
-                const bot = document.createElement('div');
-                bot.className = 'msg bot';
-                bot.textContent = 'Thinking...';
-                chat.appendChild(bot);
+                const botDiv = document.createElement('div');
+                botDiv.className = 'msg bot';
+                botDiv.textContent = 'Thinking...';
+                chat.appendChild(botDiv);
                 chat.scrollTop = chat.scrollHeight;
 
                 try {
-                    const res = await fetch('/chat', {
+                    const response = await fetch('/chat', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({message: text || "Describe this image", image_data: currentImg})
+                        body: JSON.stringify({message: text})
                     });
-                    const data = await res.json();
-                    bot.textContent = data.reply;
+                    const data = await response.json();
+                    botDiv.innerHTML = marked.parse(data.reply);
                 } catch(e) {
-                    bot.textContent = 'Error occurred!';
+                    botDiv.textContent = 'Error connecting to server.';
                 }
                 chat.scrollTop = chat.scrollHeight;
             }
-
-            document.getElementById('sendBtn').onclick = send;
-            document.getElementById('msg').onkeypress = (e) => { if(e.key === 'Enter') send(); };
         </script>
     </body>
     </html>
@@ -125,15 +81,9 @@ async def read_root():
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
-        user_msg = request.message.lower() if request.message else ""
-        
-        if any(q in user_msg for q in ["who made you", "yar nirmisidddu", "yar madiddu", "madiddu"]):
-            return {"reply": "Nagesh Nirale made me."}
-        if any(q in user_msg for q in ["what languages", "yava bashe", "language"]):
-            return {"reply": "I can understand and communicate in many languages including Kannada, English, Hindi, and more."}
-
-        model = genai.GenerativeModel('gemini-3.6-flash')
-        response = model.generate_content(request.message)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"{request.message}\n\n(Note: If this requires any terminal commands or code, please provide them strictly inside markdown code blocks like ```bash ... ``` so they are easy to copy)."
+        response = model.generate_content(prompt)
         return {"reply": response.text}
     except Exception as e:
-        return {"reply": f"Error: {str(e)}"}
+        return {"reply": "Sorry, I am having trouble processing that right now."}
