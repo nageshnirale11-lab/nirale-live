@@ -19,73 +19,71 @@ class ChatRequest(BaseModel):
 async def read_root():
     return """
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <title>Nirale AI</title>
-        <meta name="description" content="Nirale AI - Advanced Artificial Intelligence Platform">
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Nirale AI - Advanced AI Chatbot Platform</title>
+        <meta name="description" content="Nirale AI is an advanced Artificial Intelligence chatbot platform created by Nagesh for programming, Linux, and general assistance.">
+        <meta name="keywords" content="Nirale AI, Nagesh AI, AI Chatbot, Gemini AI, Linux Assistant">
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
         <style>
             * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-            html, body { background: #131314; color: #e3e3e3; font-family: sans-serif; margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; position: fixed; }
+            body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #131314; color: #e3e3e3; font-family: sans-serif; overflow: hidden; }
             
-            #sidebar { width: 260px; background: #1e1e1f; border-right: 1px solid #333; display: flex; flex-direction: column; padding: 15px; gap: 15px; z-index: 5000; position: fixed; height: 100%; left: -260px; top: 0; transition: left 0.3s ease; }
+            #sidebar { position: fixed; top: 0; left: -280px; width: 280px; height: 100%; background: #1e1e1f; border-right: 1px solid #333; display: flex; flex-direction: column; padding: 16px; gap: 12px; z-index: 5000; transition: left 0.3s ease; }
             #sidebar.open { left: 0; }
             .sidebar-header { display: flex; justify-content: space-between; align-items: center; }
             .logo-text { font-size: 16px; font-weight: bold; color: #fff; }
-            .new-chat-btn { background: #2b2c2d; color: white; border: 1px solid #444; padding: 10px 15px; border-radius: 20px; cursor: pointer; text-align: left; font-size: 14px; display: flex; align-items: center; gap: 8px; width: 100%; }
+            .new-chat-btn { background: #2b2c2d; color: white; border: 1px solid #444; padding: 10px 14px; border-radius: 20px; cursor: pointer; text-align: left; font-size: 14px; display: flex; align-items: center; gap: 8px; width: 100%; }
             .new-chat-btn:hover { background: #3c3d3e; }
             .history-title { font-size: 12px; color: #aaa; margin-top: 10px; text-transform: uppercase; letter-spacing: 1px; }
-            #history-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; }
+            #history-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
             .history-item { padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             .history-item:hover { background: #2a2b2c; color: white; }
 
-            #main-chat { display: flex; flex-direction: column; height: 100vh; width: 100vw; background: #131314; position: absolute; top: 0; left: 0; }
+            #main-chat { display: flex; flex-direction: column; height: 100%; width: 100%; background: #131314; position: relative; }
             
-            #top-nav { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid #222; background: #131314; min-height: 60px; }
-            .menu-btn { background: transparent; border: none; color: #aaa; font-size: 24px; cursor: pointer; padding: 5px; }
+            #top-nav { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #222; background: #131314; height: 56px; }
+            .menu-btn { background: transparent; border: none; color: #aaa; font-size: 22px; cursor: pointer; padding: 4px; }
             .menu-btn:hover { color: #fff; }
             
             .dropdown { position: relative; display: inline-block; }
-            .dropbtn { background: transparent; border: none; color: #aaa; font-size: 24px; cursor: pointer; padding: 8px 12px; border-radius: 50%; }
+            .dropbtn { background: transparent; border: none; color: #aaa; font-size: 22px; cursor: pointer; padding: 4px 8px; border-radius: 50%; }
             .dropbtn:hover { background: #2b2c2d; color: #fff; }
-            .dropdown-content { display: none; position: absolute; right: 0; top: 45px; background-color: #1e1e1f; min-width: 210px; box-shadow: 0px 8px 16px rgba(0,0,0,0.8); z-index: 6000; border: 1px solid #444; border-radius: 12px; overflow: hidden; }
-            .dropdown-content a { color: #e3e3e3; padding: 14px 18px; text-decoration: none; display: block; font-size: 14px; border-bottom: 1px solid #2a2b2c; }
+            .dropdown-content { display: none; position: absolute; right: 0; top: 40px; background-color: #1e1e1f; min-width: 190px; box-shadow: 0px 8px 16px rgba(0,0,0,0.8); z-index: 6000; border: 1px solid #444; border-radius: 10px; overflow: hidden; }
+            .dropdown-content a { color: #e3e3e3; padding: 12px 16px; text-decoration: none; display: block; font-size: 14px; border-bottom: 1px solid #2a2b2c; }
             .dropdown-content a:hover { background-color: #2b2c2d; color: #fff; }
             .show { display: block !important; }
 
-            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; padding-bottom: 130px; }
-            .msg { padding: 12px 18px; border-radius: 15px; max-width: 85%; font-size: 15px; line-height: 1.5; word-break: break-word; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; padding-bottom: 110px; }
+            .msg { padding: 12px 16px; border-radius: 14px; max-width: 85%; font-size: 15px; line-height: 1.4; word-break: break-word; }
             .user { background: #2b2c2d; align-self: flex-end; color: white; }
             .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
-            .bot pre { background: #000000; padding: 12px; border-radius: 8px; overflow-x: auto; border: 1px solid #444; margin: 8px 0; }
-            .bot code { font-family: monospace; color: #a8c7fa; font-size: 14px; }
-            .msg img { max-width: 200px; border-radius: 8px; margin-top: 5px; display: block; }
+            .bot pre { background: #000; padding: 10px; border-radius: 6px; overflow-x: auto; border: 1px solid #444; margin: 6px 0; }
+            .bot code { font-family: monospace; color: #a8c7fa; font-size: 13px; }
+            .msg img { max-width: 200px; border-radius: 6px; margin-top: 6px; display: block; }
 
-            /* Fixed Bottom Search / Input Container */
-            .input-container { position: absolute; bottom: 15px; left: 0; width: 100%; padding: 0 12px; background: transparent; display: flex; flex-direction: column; gap: 8px; align-items: center; z-index: 4000; }
+            .input-container { position: absolute; bottom: 12px; left: 0; width: 100%; padding: 0 12px; display: flex; flex-direction: column; gap: 6px; align-items: center; z-index: 4000; background: transparent; }
             
-            /* Image Preview Container inside Input area */
-            #image-preview-container { display: none; width: 100%; max-width: 800px; background: #1e1e1f; padding: 8px 12px; border-radius: 12px; border: 1px solid #444; align-items: center; gap: 10px; }
-            #image-preview-container img { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; }
+            #image-preview-container { display: none; width: 100%; max-width: 750px; background: #1e1e1f; padding: 6px 12px; border-radius: 10px; border: 1px solid #444; align-items: center; gap: 8px; }
+            #image-preview-container img { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; }
             #image-preview-container span { font-size: 13px; color: #aaa; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
             #image-preview-container button { background: #333; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
 
-            .input-box { background: #1e1e1f; padding: 6px 10px; border-radius: 30px; display: flex; align-items: center; border: 1px solid #444; width: 100%; max-width: 800px; gap: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
-            input[type="text"] { flex: 1; background: transparent; border: none; color: white; outline: none; font-size: 16px; padding: 8px 4px; min-width: 0; }
-            .icon-btn { background: transparent; border: none; color: #aaa; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; padding: 6px; flex-shrink: 0; }
+            .input-box { background: #1e1e1f; padding: 6px 10px; border-radius: 30px; display: flex; align-items: center; border: 1px solid #444; width: 100%; max-width: 750px; gap: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+            input[type="text"] { flex: 1; background: transparent; border: none; color: white; outline: none; font-size: 15px; padding: 6px 4px; min-width: 0; }
+            .icon-btn { background: transparent; border: none; color: #aaa; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; padding: 4px; flex-shrink: 0; }
             .icon-btn:hover { color: white; }
-            .send { background: #ff4444; color: white; border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; }
+            .send { background: #ff4444; color: white; border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; font-size: 15px; }
 
-            /* Modal Styling */
             #auth-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 7000; justify-content: center; align-items: center; }
-            .modal-content { background: #1e1e1f; padding: 30px; border-radius: 15px; border: 1px solid #444; width: 90%; max-width: 350px; display: flex; flex-direction: column; gap: 15px; text-align: center; }
-            .modal-content h2 { color: white; margin: 0; font-size: 22px; }
-            .modal-content p { color: #aaa; font-size: 14px; margin: 0; line-height: 1.5; }
-            .modal-input { background: #131314; border: 1px solid #444; padding: 12px; border-radius: 8px; color: white; outline: none; font-size: 14px; width: 100%; }
-            .modal-btn { background: #ff4444; color: white; border: none; padding: 12px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 15px; }
-            .modal-btn:hover { background: #ff2222; }
-            .close-modal { background: #333; color: #ccc; border: none; padding: 8px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+            .modal-content { background: #1e1e1f; padding: 24px; border-radius: 14px; border: 1px solid #444; width: 90%; max-width: 340px; display: flex; flex-direction: column; gap: 14px; text-align: center; }
+            .modal-content h2 { color: white; margin: 0; font-size: 20px; }
+            .modal-content p { color: #aaa; font-size: 14px; margin: 0; line-height: 1.4; }
+            .modal-input { background: #131314; border: 1px solid #444; padding: 10px; border-radius: 6px; color: white; outline: none; font-size: 14px; width: 100%; }
+            .modal-btn { background: #ff4444; color: white; border: none; padding: 10px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px; }
+            .close-modal { background: #333; color: #ccc; border: none; padding: 6px; border-radius: 6px; cursor: pointer; font-size: 12px; }
         </style>
     </head>
     <body>
@@ -118,11 +116,10 @@ async def read_root():
             </div>
 
             <div class="input-container">
-                <!-- Image Preview Preview Box (Appears right above search bar when image is selected) -->
                 <div id="image-preview-container">
                     <img id="preview-img" src="" alt="Preview">
                     <span id="preview-name">Image selected</span>
-                    <button onclick="removeImage()">✕ Remove</button>
+                    <button onclick="removeImage()">✕</button>
                 </div>
 
                 <div class="input-box">
@@ -135,11 +132,10 @@ async def read_root():
             </div>
         </div>
 
-        <!-- Auth / Modal -->
         <div id="auth-modal">
             <div class="modal-content">
                 <h2 id="modal-title">Nirale AI Login</h2>
-                <p id="modal-desc">You have completed 20 questions. Please login to get 30 more free questions.</p>
+                <p id="modal-desc">Please enter your Gmail ID and Password.</p>
                 <input type="email" id="login-email" class="modal-input" placeholder="Enter Gmail ID">
                 <input type="password" id="login-pass" class="modal-input" placeholder="Enter Password">
                 <button class="modal-btn" id="modal-action-btn" onclick="submitLogin()">Sign In</button>
@@ -160,8 +156,7 @@ async def read_root():
 
             function toggleDropdown(event) {
                 event.stopPropagation();
-                const dropdown = document.getElementById("myDropdown");
-                dropdown.classList.toggle("show");
+                document.getElementById("myDropdown").classList.toggle("show");
             }
 
             window.onclick = function(event) {
@@ -227,12 +222,6 @@ async def read_root():
                 const file = event.target.files[0];
                 if (!file) return;
 
-                if (!isPro && imageCount >= 20) {
-                    openUpgradeModal();
-                    alert("You have reached the limit of 20 image uploads. Please upgrade.");
-                    return;
-                }
-
                 const reader = new FileReader();
                 reader.onload = function(e) {
                     selectedFileBase64 = e.target.result;
@@ -278,7 +267,7 @@ async def read_root():
             function startSpeech() {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                 if (!SpeechRecognition) {
-                    alert("Speech recognition not supported in this browser.");
+                    alert("Speech recognition not supported.");
                     return;
                 }
                 const recognition = new SpeechRecognition();
@@ -304,14 +293,8 @@ async def read_root():
                         openUpgradeModal();
                         return;
                     }
-
                     questionCount++;
                     localStorage.setItem('q_count', questionCount);
-
-                    if (selectedFileBase64) {
-                        imageCount++;
-                        localStorage.setItem('img_count', imageCount);
-                    }
                 }
 
                 let userHtml = '<div class="msg user">' + (text ? text : 'Uploaded an image') + (selectedFileBase64 ? '<br><img src="'+selectedFileBase64+'">' : '') + '</div>';
