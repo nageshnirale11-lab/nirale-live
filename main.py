@@ -171,4 +171,4 @@ async def chat(request: ChatRequest):
         response = model.generate_content(request.message)
         return {"reply": response.text}
     except Exception as e:
-        return {"reply": "I am ready: Please ask again."}
+        return {"reply": f"Error: {str(e)}"}
