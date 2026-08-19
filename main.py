@@ -22,7 +22,6 @@ async def read_root():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Nirale AI</title>
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
-        <script src="https://accounts.google.com/gsi/client" async defer></script>
         <style>
             body { background: #131314; color: #e3e3e3; font-family: sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; }
             
@@ -35,12 +34,9 @@ async def read_root():
             .history-item { padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             .history-item:hover { background: #2a2b2c; color: white; }
 
-            /* Top Bar & Login */
-            #top-bar { position: absolute; top: 15px; right: 20px; display: flex; align-items: center; z-index: 10; }
-
             /* Main Chat Area Styling */
             #main-chat { flex: 1; display: flex; flex-direction: column; height: 100vh; background: #131314; position: relative; }
-            #chatbox { flex: 1; overflow-y: auto; padding: 20px; padding-top: 60px; display: flex; flex-direction: column; gap: 15px; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
             .msg { padding: 12px 18px; border-radius: 15px; max-width: 80%; font-size: 15px; line-height: 1.5; word-break: break-word; }
             .user { background: #2b2c2d; align-self: flex-end; color: white; }
             .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
@@ -53,6 +49,14 @@ async def read_root():
             .icon-btn { background: transparent; border: none; color: #aaa; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; padding: 5px; }
             .icon-btn:hover { color: white; }
             .send { background: #ff4444; color: white; border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; }
+
+            /* Upgrade Modal Styling */
+            #upgrade-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center; }
+            .modal-content { background: #1e1e1f; padding: 30px; border-radius: 15px; border: 1px solid #444; width: 340px; display: flex; flex-direction: column; gap: 15px; text-align: center; }
+            .modal-content h2 { color: white; margin: 0; font-size: 22px; }
+            .modal-content p { color: #aaa; font-size: 14px; margin: 0; line-height: 1.4; }
+            .modal-btn { background: #ff4444; color: white; border: none; padding: 12px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 15px; margin-top: 5px; }
+            .modal-btn:hover { background: #ff2222; }
         </style>
     </head>
     <body>
@@ -66,15 +70,6 @@ async def read_root():
 
         <!-- Main Chat -->
         <div id="main-chat">
-            <!-- Google Login Button Top Right -->
-            <div id="top-bar">
-                <div id="g_id_onload"
-                     data-client_id="871572564566-kuia506dos7nl6asrotga5t0ii44f0n7.apps.googleusercontent.com"
-                     data-callback="handleCredentialResponse">
-                </div>
-                <div class="g_id_signin" data-type="standard" data-shape="pill" data-theme="filled_black"></div>
-            </div>
-
             <div id="chatbox">
                 <div class="msg bot">Hello! Ask me any Linux or programming commands, and I will format them properly for you.</div>
             </div>
@@ -88,10 +83,22 @@ async def read_root():
             </div>
         </div>
 
+        <!-- Upgrade Modal -->
+        <div id="upgrade-modal">
+            <div class="modal-content">
+                <h2>Upgrade to Nirale AI Pro</h2>
+                <p>You have reached your 50 free questions limit. Get unlimited chat access for 3 months at just <b>Rs. 300</b>!</p>
+                <button class="modal-btn" onclick="proceedToPayment()">Upgrade Now (Rs. 300)</button>
+            </div>
+        </div>
+
         <script>
-            function handleCredentialResponse(response) {
-                console.log("Encoded JWT ID token: " + response.credential);
-                alert("Successfully logged in with Google!");
+            let questionCount = localStorage.getItem('q_count') ? parseInt(localStorage.getItem('q_count')) : 0;
+            let isPro = localStorage.getItem('is_pro') === 'true';
+
+            function proceedToPayment() {
+                // ಇಲ್ಲಿ ನಿಮ್ಮ ರೇಜರ್‌ಪೇ ಅಥವಾ ಯುಪಿಐ ಪೇಮೆಂಟ್ ಲಿಂಕ್ ಹಾಕಬಹುದು
+                window.location.href = "https://razorpay.com"; 
             }
 
             function newChat() {
@@ -128,6 +135,15 @@ async def read_root():
                 const chat = document.getElementById('chatbox');
                 const text = input.value.trim();
                 if(!text) return;
+
+                if (!isPro) {
+                    if (questionCount >= 50) {
+                        document.getElementById('upgrade-modal').style.display = 'flex';
+                        return;
+                    }
+                    questionCount++;
+                    localStorage.setItem('q_count', questionCount);
+                }
 
                 chat.innerHTML += '<div class="msg user">' + text + '</div>';
                 addHistory(text);
