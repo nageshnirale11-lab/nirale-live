@@ -2,14 +2,13 @@ import os
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from google import genai
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
 app = FastAPI()
 
-# New client configuration
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 class ChatRequest(BaseModel):
     message: str
@@ -88,12 +87,9 @@ async def read_root():
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"{request.message}\n\n(Note: If this response includes any terminal commands, file paths, or code snippets, you MUST format them inside markdown code blocks using triple backticks like ```bash ... ``` so they appear cleanly formatted)."
-        # Using the new Google GenAI SDK syntax
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-        )
+        response = model.generate_content(prompt)
         return {"reply": response.text}
     except Exception as e:
         return {"reply": f"Error: {str(e)}"}
