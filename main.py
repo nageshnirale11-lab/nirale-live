@@ -8,13 +8,13 @@ from dotenv import load_dotenv
 load_dotenv()
 app = FastAPI()
 
-# Fetch and configure API key safely
 api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
 class ChatRequest(BaseModel):
     message: str
+    image: str = None  # Added support for image base64 data
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -37,11 +37,16 @@ async def read_root():
             #main-chat { display: flex; flex-direction: column; height: 100%; width: 100%; background: #131314; position: relative; }
             #top-nav { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #222; background: #131314; height: 56px; }
             .menu-btn { background: transparent; border: none; color: #aaa; font-size: 22px; cursor: pointer; padding: 4px; }
-            #chatbox { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; padding-bottom: 110px; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; padding-bottom: 120px; }
             .msg { padding: 12px 16px; border-radius: 14px; max-width: 85%; font-size: 15px; line-height: 1.4; word-break: break-word; }
             .user { background: #2b2c2d; align-self: flex-end; color: white; }
             .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
-            .input-container { position: absolute; bottom: 12px; left: 0; width: 100%; padding: 0 12px; display: flex; justify-content: center; z-index: 4000; }
+            .msg img { max-width: 200px; border-radius: 8px; margin-top: 6px; display: block; }
+            .input-container { position: absolute; bottom: 12px; left: 0; width: 100%; padding: 0 12px; display: flex; flex-direction: column; gap: 6px; align-items: center; z-index: 4000; }
+            #image-preview-container { display: none; width: 100%; max-width: 750px; background: #1e1e1f; padding: 6px 12px; border-radius: 10px; border: 1px solid #444; align-items: center; gap: 8px; }
+            #image-preview-container img { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; }
+            #image-preview-container span { font-size: 13px; color: #aaa; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            #image-preview-container button { background: #333; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
             .input-box { background: #1e1e1f; padding: 6px 10px; border-radius: 30px; display: flex; align-items: center; border: 1px solid #444; width: 100%; max-width: 750px; gap: 8px; }
             input[type="text"] { flex: 1; background: transparent; border: none; color: white; outline: none; font-size: 15px; padding: 6px 4px; }
             .icon-btn { background: transparent; border: none; color: #aaa; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; padding: 4px; }
@@ -63,10 +68,17 @@ async def read_root():
                 <span style="font-weight:bold; color:#fff;">Nirale AI</span>
             </div>
             <div id="chatbox">
-                <div class="msg bot">Hello! I am Nirale AI. Ask me anything.</div>
+                <div class="msg bot">Hello! I am Nirale AI. Ask me anything or upload images.</div>
             </div>
             <div class="input-container">
+                <div id="image-preview-container">
+                    <img id="preview-img" src="" alt="Preview">
+                    <span id="preview-name">Image selected</span>
+                    <button onclick="removeImage()">✕</button>
+                </div>
                 <div class="input-box">
+                    <input type="file" id="file-input" style="display:none" accept="image/*" onchange="handleFileSelect(event)">
+                    <button class="icon-btn" title="Upload Image" onclick="document.getElementById('file-input').click()">➕</button>
                     <input type="text" id="msg" placeholder="Ask Nirale AI..." onkeypress="if(event.key === 'Enter') send()">
                     <button class="icon-btn" title="Microphone" onclick="startSpeech()">🎤</button>
                     <button class="send" onclick="send()">➔</button>
@@ -74,15 +86,32 @@ async def read_root():
             </div>
         </div>
         <script>
+            let selectedFileBase64 = null;
             function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
-            function newChat() { document.getElementById('chatbox').innerHTML = '<div class="msg bot">Hello! I am Nirale AI. Ask me anything.</div>'; toggleSidebar(); }
+            function newChat() { document.getElementById('chatbox').innerHTML = '<div class="msg bot">Hello! I am Nirale AI. Ask me anything or upload images.</div>'; removeImage(); toggleSidebar(); }
             
+            function handleFileSelect(event) {
+                const file = event.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    selectedFileBase64 = e.target.result;
+                    document.getElementById('preview-img').src = selectedFileBase64;
+                    document.getElementById('preview-name').innerText = file.name;
+                    document.getElementById('image-preview-container').style.display = 'flex';
+                };
+                reader.readAsDataURL(file);
+            }
+
+            function removeImage() {
+                selectedFileBase64 = null;
+                document.getElementById('image-preview-container').style.display = 'none';
+                document.getElementById('file-input').value = '';
+            }
+
             function startSpeech() {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-                if (!SpeechRecognition) {
-                    alert("Speech recognition not supported in this browser.");
-                    return;
-                }
+                if (!SpeechRecognition) { alert("Speech recognition not supported."); return; }
                 const recognition = new SpeechRecognition();
                 recognition.lang = 'en-US';
                 recognition.onresult = function(event) {
@@ -95,19 +124,27 @@ async def read_root():
                 const input = document.getElementById('msg');
                 const chat = document.getElementById('chatbox');
                 const text = input.value.trim();
-                if(!text) return;
-                chat.innerHTML += '<div class="msg user">' + text + '</div>';
+                if(!text && !selectedFileBase64) return;
+
+                let userHtml = '<div class="msg user">' + (text ? text : 'Uploaded image') + (selectedFileBase64 ? '<br><img src="'+selectedFileBase64+'">' : '') + '</div>';
+                chat.innerHTML += userHtml;
+                
+                let payload = { message: text || "Describe this image", image: selectedFileBase64 };
+                input.value.trim();
                 input.value = '';
+                removeImage();
+
                 const botDiv = document.createElement('div');
                 botDiv.className = 'msg bot';
                 botDiv.textContent = 'Thinking...';
                 chat.appendChild(botDiv);
                 chat.scrollTop = chat.scrollHeight;
+
                 try {
                     const response = await fetch('/chat', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({message: text})
+                        body: JSON.stringify(payload)
                     });
                     const data = await response.json();
                     if(response.ok) {
@@ -130,11 +167,23 @@ async def chat(request: ChatRequest):
     try:
         current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         if not current_key:
-            return {"reply": "API Key is missing in Render Environment variables."}
+            return {"reply": "API Key missing in environment."}
         
         genai.configure(api_key=current_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(request.message)
+        
+        # If image is attached, process it with gemini-1.5-flash
+        if request.image:
+            import base64
+            header, encoded = request.image.split(",", 1)
+            image_data = base64.b64decode(encoded)
+            image_parts = [{"mime_type": "image/jpeg", "data": image_data}]
+            
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content([request.message, image_parts[0]])
+        else:
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(request.message)
+            
         return {"reply": response.text}
     except Exception as e:
         return {"reply": f"API Error: {str(e)}"}
