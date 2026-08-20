@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 app = FastAPI()
 
-# Safely configure API Key (works for both GOOGLE_API_KEY and GEMINI_API_KEY)
+# Fetch and configure API key safely
 api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
@@ -44,6 +44,8 @@ async def read_root():
             .input-container { position: absolute; bottom: 12px; left: 0; width: 100%; padding: 0 12px; display: flex; justify-content: center; z-index: 4000; }
             .input-box { background: #1e1e1f; padding: 6px 10px; border-radius: 30px; display: flex; align-items: center; border: 1px solid #444; width: 100%; max-width: 750px; gap: 8px; }
             input[type="text"] { flex: 1; background: transparent; border: none; color: white; outline: none; font-size: 15px; padding: 6px 4px; }
+            .icon-btn { background: transparent; border: none; color: #aaa; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; padding: 4px; }
+            .icon-btn:hover { color: white; }
             .send { background: #ff4444; color: white; border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; }
         </style>
     </head>
@@ -66,6 +68,7 @@ async def read_root():
             <div class="input-container">
                 <div class="input-box">
                     <input type="text" id="msg" placeholder="Ask Nirale AI..." onkeypress="if(event.key === 'Enter') send()">
+                    <button class="icon-btn" title="Microphone" onclick="startSpeech()">🎤</button>
                     <button class="send" onclick="send()">➔</button>
                 </div>
             </div>
@@ -73,6 +76,21 @@ async def read_root():
         <script>
             function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
             function newChat() { document.getElementById('chatbox').innerHTML = '<div class="msg bot">Hello! I am Nirale AI. Ask me anything.</div>'; toggleSidebar(); }
+            
+            function startSpeech() {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SpeechRecognition) {
+                    alert("Speech recognition not supported in this browser.");
+                    return;
+                }
+                const recognition = new SpeechRecognition();
+                recognition.lang = 'en-US';
+                recognition.onresult = function(event) {
+                    document.getElementById('msg').value = event.results[0][0].transcript;
+                };
+                recognition.start();
+            }
+
             async function send() {
                 const input = document.getElementById('msg');
                 const chat = document.getElementById('chatbox');
@@ -110,9 +128,11 @@ async def read_root():
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
-        if not api_key:
-            return {"reply": "API Key not found on server environment variables."}
-        # Using gemini-1.5-flash for robust replies
+        current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not current_key:
+            return {"reply": "API Key is missing in Render Environment variables."}
+        
+        genai.configure(api_key=current_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(request.message)
         return {"reply": response.text}
