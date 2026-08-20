@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 load_dotenv()
 app = FastAPI()
 
-# Configure Gemini API safely
 api_key = os.getenv("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
@@ -24,37 +23,32 @@ async def read_root():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Nirale AI</title>
+        <title>Nirale AI | Advanced AI Chatbot</title>
+        <meta name="description" content="Nirale AI is an advanced Artificial Intelligence chatbot platform for coding, Linux, and general assistance.">
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
         <style>
             * { box-sizing: border-box; }
             body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #131314; color: #e3e3e3; font-family: sans-serif; overflow: hidden; }
-            #main-chat { display: flex; flex-direction: column; height: 100%; width: 100%; background: #131314; position: relative; }
-            #top-nav { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid #222; background: #131314; height: 60px; }
-            .logo { font-size: 16px; font-weight: bold; color: #fff; }
-            #chatbox { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; padding-bottom: 90px; }
-            .msg { padding: 12px 16px; border-radius: 14px; max-width: 85%; font-size: 15px; line-height: 1.4; word-break: break-word; }
+            #main-chat { display: flex; flex-direction: column; height: 100%; width: 100%; background: #131314; }
+            #top-nav { padding: 15px 20px; border-bottom: 1px solid #333; font-weight: bold; font-size: 18px; color: #fff; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+            .msg { padding: 12px 16px; border-radius: 12px; max-width: 80%; }
             .user { background: #2b2c2d; align-self: flex-end; color: white; }
-            .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
-            .input-container { position: absolute; bottom: 12px; left: 0; width: 100%; padding: 0 12px; display: flex; justify-content: center; }
-            .input-box { background: #1e1e1f; padding: 8px 15px; border-radius: 30px; display: flex; align-items: center; border: 1px solid #444; width: 100%; max-width: 800px; gap: 10px; }
-            input[type="text"] { flex: 1; background: transparent; border: none; color: white; outline: none; font-size: 15px; padding: 4px; }
-            .send { background: #ff4444; color: white; border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; }
+            .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #444; }
+            .input-area { padding: 20px; display: flex; gap: 10px; background: #131314; }
+            input { flex: 1; padding: 12px; border-radius: 20px; border: 1px solid #444; background: #1e1e1f; color: white; }
+            button { padding: 10px 20px; border-radius: 20px; border: none; background: #ff4444; color: white; cursor: pointer; }
         </style>
     </head>
     <body>
         <div id="main-chat">
-            <div id="top-nav">
-                <span class="logo">✨ Nirale AI</span>
-            </div>
+            <div id="top-nav">✨ Nirale AI</div>
             <div id="chatbox">
-                <div class="msg bot">Hello! Ask me anything.</div>
+                <div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>
             </div>
-            <div class="input-container">
-                <div class="input-box">
-                    <input type="text" id="msg" placeholder="Ask Nirale AI..." onkeypress="if(event.key === 'Enter') send()">
-                    <button class="send" onclick="send()">➔</button>
-                </div>
+            <div class="input-area">
+                <input type="text" id="msg" placeholder="Ask Nirale AI..." onkeypress="if(event.key === 'Enter') send()">
+                <button onclick="send()">Send</button>
             </div>
         </div>
         <script>
@@ -63,16 +57,12 @@ async def read_root():
                 const chat = document.getElementById('chatbox');
                 const text = input.value.trim();
                 if(!text) return;
-
                 chat.innerHTML += '<div class="msg user">' + text + '</div>';
                 input.value = '';
-
                 const botDiv = document.createElement('div');
                 botDiv.className = 'msg bot';
                 botDiv.textContent = 'Thinking...';
                 chat.appendChild(botDiv);
-                chat.scrollTop = chat.scrollHeight;
-
                 try {
                     const response = await fetch('/chat', {
                         method: 'POST',
@@ -80,13 +70,9 @@ async def read_root():
                         body: JSON.stringify({message: text})
                     });
                     const data = await response.json();
-                    if(response.ok) {
-                        botDiv.innerHTML = marked.parse(data.reply);
-                    } else {
-                        botDiv.textContent = 'Server Error: ' + (data.reply || 'Unknown error');
-                    }
+                    botDiv.innerHTML = marked.parse(data.reply);
                 } catch(e) {
-                    botDiv.textContent = 'Error connecting to server.';
+                    botDiv.textContent = 'Error connecting to server. Please try again.';
                 }
                 chat.scrollTop = chat.scrollHeight;
             }
@@ -99,11 +85,9 @@ async def read_root():
 async def chat(request: ChatRequest):
     try:
         if not api_key:
-            return {"reply": "API key not configured on server."}
-        
-        # Using gemini-1.5-flash for fast and reliable responses
+            return {"reply": "API Key missing."}
         model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(request.message)
         return {"reply": response.text}
     except Exception as e:
-        return {"reply": f"API Error: {str(e)}"}
+        return {"reply": f"Error: {str(e)}"}
