@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 load_dotenv()
 app = FastAPI()
 
-api_key = os.getenv("GEMINI_API_KEY")
+# Check for both possible API key environment variable names
+api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
@@ -333,10 +334,13 @@ async def read_root():
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
-        if not api_key:
-            return {"reply": "API Key missing on server."}
+        current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not current_key:
+            return {"reply": "Error: API Key not found in server environment variables."}
+        
+        genai.configure(api_key=current_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(request.message)
         return {"reply": response.text}
     except Exception as e:
-        return {"reply": f"Error: {str(e)}"}
+        return {"reply": f"API Error: {str(e)}"}
