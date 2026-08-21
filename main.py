@@ -24,48 +24,86 @@ async def read_root():
         <title>Nirale AI</title>
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
         <style>
-            body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #131314; color: #e3e3e3; font-family: sans-serif; overflow: hidden; }
-            #sidebar { position: fixed; top: 0; left: -280px; width: 280px; height: 100%; background: #1e1e1f; border-right: 1px solid #333; z-index: 5000; transition: left 0.3s ease; padding: 20px; }
-            #sidebar.open { left: 0; }
-            #main-chat { height: 100%; display: flex; flex-direction: column; background: #131314; }
-            #top-nav { display: flex; justify-content: space-between; padding: 15px; border-bottom: 1px solid #333; }
-            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
-            .msg { padding: 12px 16px; border-radius: 12px; max-width: 80%; }
-            .user { background: #2b2c2d; align-self: flex-end; }
-            .bot { background: #1e1e1f; border: 1px solid #333; }
-            .input-box { padding: 15px; display: flex; gap: 10px; }
-            input { flex: 1; padding: 12px; border-radius: 20px; background: #222; border: 1px solid #444; color: white; outline: none; }
-            button { padding: 10px 20px; border-radius: 20px; border: none; background: #ff4444; color: white; cursor: pointer; }
+            body, html { margin:0; padding:0; background:#131314; color:#fff; font-family:sans-serif; height:100%; overflow:hidden; }
+            #sidebar { position:fixed; left:-280px; width:280px; height:100%; background:#1e1e1f; border-right:1px solid #333; transition:0.3s; z-index:1000; padding:20px; box-sizing: border-box; }
+            #sidebar.open { left:0; }
+            #main-chat { height:100%; display:flex; flex-direction:column; background:#131314; }
+            #top-nav { display:flex; justify-content:space-between; align-items:center; padding:15px; border-bottom:1px solid #333; background:#1e1e1f; }
+            #chatbox { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:15px; }
+            .msg { padding:12px 16px; border-radius:15px; max-width:80%; word-break: break-word; }
+            .user { background:#444; align-self:flex-end; }
+            .bot { background:#222; border:1px solid #444; align-self:flex-start; }
+            .input-area { padding:15px; display:flex; gap:10px; align-items:center; background:#131314; }
+            input { flex:1; padding:12px; border-radius:25px; border:1px solid #444; background:#222; color:white; outline:none; }
+            .action-btn { background:#ff4444; border:none; color:white; padding:10px 15px; border-radius:50%; cursor:pointer; font-weight:bold; display:flex; align-items:center; justify-content:center; }
+            .menu-btn { background:transparent; border:none; color:white; font-size:20px; cursor:pointer; }
         </style>
     </head>
     <body>
         <div id="sidebar">
-            <h3 style="color:white">Menu</h3>
-            <button onclick="newChat()" style="width:100%; padding:10px; background:#444; color:white; border:none; cursor:pointer;">＋ New Chat</button>
+            <h3 style="color:white; margin-top:0;">Menu</h3>
+            <button onclick="location.reload()" style="width:100%; padding:10px; border-radius:10px; border:none; background:#333; color:white; cursor:pointer; font-weight:bold;">＋ New Chat</button>
         </div>
+        
         <div id="main-chat">
             <div id="top-nav">
-                <button onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button>
-                <span style="font-weight:bold">Nirale AI</span>
-                <button onclick="alert('Options')">⋮</button>
+                <button class="menu-btn" onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button>
+                <span style="font-weight:bold; font-size:18px;">Nirale AI</span>
+                <button class="menu-btn" onclick="alert('Nirale AI - Developed by Nagesh Nirale')">⋮</button>
             </div>
-            <div id="chatbox"><div class="msg bot">Hello! I am Nirale AI.</div></div>
-            <div class="input-box">
-                <input type="text" id="msg" placeholder="Ask something...">
-                <button onclick="send()">Send</button>
+            
+            <div id="chatbox">
+                <div class="msg bot">Hello! I am Nirale AI, created by Nagesh Nirale. How can I help you?</div>
+            </div>
+            
+            <div class="input-area">
+                <button class="action-btn" onclick="startSpeech()" title="Voice Input">🎤</button>
+                <input type="text" id="msg" placeholder="Ask me anything..." onkeypress="if(event.key === 'Enter') send()">
+                <button class="action-btn" onclick="send()" title="Send">➔</button>
             </div>
         </div>
+
         <script>
-            function newChat() { document.getElementById('chatbox').innerHTML = '<div class="msg bot">Hello! I am Nirale AI.</div>'; document.getElementById('sidebar').classList.remove('open'); }
+            function startSpeech() {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if(!SpeechRecognition) { alert("Speech recognition not supported in this browser."); return; }
+                const rec = new SpeechRecognition();
+                rec.lang = 'kn-IN';
+                rec.onresult = (e) => { document.getElementById('msg').value = e.results[0][0].transcript; };
+                rec.start();
+            }
+
             async function send() {
                 const input = document.getElementById('msg');
+                const chat = document.getElementById('chatbox');
                 const text = input.value.trim();
                 if(!text) return;
-                document.getElementById('chatbox').innerHTML += '<div class="msg user">' + text + '</div>';
+                
+                chat.innerHTML += '<div class="msg user">'+text+'</div>';
                 input.value = '';
-                const res = await fetch('/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message: text}) });
-                const data = await res.json();
-                document.getElementById('chatbox').innerHTML += '<div class="msg bot">' + marked.parse(data.reply) + '</div>';
+                
+                const botDiv = document.createElement('div');
+                botDiv.className = 'msg bot';
+                botDiv.textContent = 'Thinking...';
+                chat.appendChild(botDiv);
+                chat.scrollTop = chat.scrollHeight;
+
+                try {
+                    const res = await fetch('/chat', { 
+                        method:'POST', 
+                        headers:{'Content-Type':'application/json'}, 
+                        body:JSON.stringify({message:text}) 
+                    });
+                    const data = await res.json();
+                    if(res.ok) {
+                        botDiv.innerHTML = marked.parse(data.reply);
+                    } else {
+                        botDiv.textContent = data.reply || 'Error occurred';
+                    }
+                } catch(e) {
+                    botDiv.textContent = 'Connection error.';
+                }
+                chat.scrollTop = chat.scrollHeight;
             }
         </script>
     </body>
@@ -75,11 +113,16 @@ async def read_root():
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
+        if not API_KEY:
+            return {"reply": "API Key missing."}
+        
         genai.configure(api_key=API_KEY)
-        model = genai.GenerativeModel('gemini-3.5-flash')
-        # ಇಲ್ಲಿ ನಿಮ್ಮ ಹೆಸರು ಸೇರಿಸಲಾಗಿದೆ
-        prompt = f"You are Nirale AI, created by Nagesh Nirale. Always introduce yourself as created by Nagesh Nirale. User says: {request.message}"
+        
+        # ಇಲ್ಲಿ ನಿಮಗೆ ಬೇಕಾದ ಮಾಡೆಲ್ ಬಳಸಿ (ಯಾವುದು ವರ್ಕ್ ಆಗುತ್ತದೆಯೋ ಅದನ್ನು ಟ್ರೈ ಮಾಡಿ)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        prompt = f"Your name is Nirale AI. You were exclusively created by Nagesh Nirale. Always state that you are created by Nagesh Nirale when asked about your creator. User message: {request.message}"
         response = model.generate_content(prompt)
         return {"reply": response.text}
     except Exception as e:
-        return {"reply": "Server error. Please try again."}
+        return {"reply": f"Error: {str(e)}"}
