@@ -1,13 +1,10 @@
 import os
-
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import google.generativeai as genai
 
-
 app = FastAPI()
-
 
 API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
@@ -25,16 +22,11 @@ async def read_root():
 <!DOCTYPE html>
 <html lang="en">
 <head>
-
 <meta charset="UTF-8">
-
-<meta name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Nirale AI</title>
 
 <style>
-
 * {
     box-sizing: border-box;
 }
@@ -58,9 +50,7 @@ html, body {
     flex-direction: column;
 }
 
-
 /* HEADER */
-
 .header {
     height: 56px;
     min-height: 56px;
@@ -85,15 +75,22 @@ html, body {
     font-weight: bold;
 }
 
-.icon-btn {
+.icon-btn,
+.plus-btn {
     width: 40px;
     height: 40px;
     border: 0;
     border-radius: 50%;
-    background: transparent;
     color: white;
-    font-size: 22px;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.icon-btn {
+    background: transparent;
+    font-size: 22px;
 }
 
 .icon-btn:hover {
@@ -101,29 +98,21 @@ html, body {
 }
 
 .plus-btn {
-    width: 40px;
-    height: 40px;
-    border: 0;
-    border-radius: 50%;
     background: #333;
-    color: white;
     font-size: 25px;
-    cursor: pointer;
 }
 
 .plus-btn:hover {
     background: #444;
 }
 
-
 /* MENU */
-
 .menu {
     display: none;
     position: fixed;
-    top: 60px;
+    top: 61px;
     right: 10px;
-    width: 190px;
+    width: 170px;
     background: #1e1e1f;
     border: 1px solid #444;
     border-radius: 12px;
@@ -144,19 +133,18 @@ html, body {
     text-align: left;
     border-radius: 8px;
     cursor: pointer;
+    font-size: 14px;
 }
 
 .menu button:hover {
     background: #333;
 }
 
-
 /* CHAT */
-
 #chatbox {
     flex: 1;
     overflow-y: auto;
-    padding: 14px;
+    padding: 15px;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -184,13 +172,11 @@ html, body {
     color: #e3e3e3;
 }
 
-
 /* INPUT */
-
 .input-container {
     width: 100%;
     min-height: 68px;
-    padding: 9px 10px;
+    padding: 9px;
     display: flex;
     align-items: center;
     gap: 7px;
@@ -201,9 +187,9 @@ html, body {
 #msg {
     flex: 1;
     min-width: 0;
-    height: 44px;
+    height: 45px;
     padding: 0 15px;
-    border-radius: 22px;
+    border-radius: 23px;
     background: #1e1e1f;
     border: 1px solid #444;
     color: white;
@@ -211,29 +197,36 @@ html, body {
     font-size: 15px;
 }
 
+#msg::placeholder {
+    color: #999;
+}
+
 .mic-btn {
+    width: 45px;
+    height: 45px;
     flex-shrink: 0;
-    background: #2b2c2d;
+    border-radius: 50%;
     border: 1px solid #444;
+    background: #2b2c2d;
+    color: white;
+    font-size: 18px;
+    cursor: pointer;
 }
 
 .send-btn {
+    height: 45px;
     flex-shrink: 0;
-    height: 44px;
-    padding: 0 16px;
-    border-radius: 22px;
-    border: none;
+    padding: 0 17px;
+    border: 0;
+    border-radius: 23px;
     background: #ff4444;
     color: white;
     font-weight: bold;
     cursor: pointer;
 }
 
-
 /* MOBILE */
-
 @media (max-width: 600px) {
-
     .header {
         height: 54px;
         min-height: 54px;
@@ -260,13 +253,15 @@ html, body {
     }
 
     .input-container {
-        min-height: 64px;
+        min-height: 65px;
         padding: 8px;
+        gap: 5px;
     }
 
     #msg {
         height: 44px;
         font-size: 14px;
+        padding: 0 13px;
     }
 
     .mic-btn {
@@ -280,9 +275,7 @@ html, body {
         font-size: 13px;
     }
 }
-
 </style>
-
 </head>
 
 <body>
@@ -292,135 +285,66 @@ html, body {
     <div class="header">
 
         <div class="header-left">
-
-            <button
-                class="icon-btn"
-                onclick="alert('Nirale AI Menu')">
-                ☰
-            </button>
-
-            <span class="logo">
-                ✨ Nirale AI
-            </span>
-
+            <button class="icon-btn" onclick="newChat()">☰</button>
+            <span class="logo">✨ Nirale AI</span>
         </div>
 
         <div class="header-right">
-
-            <button
-                class="plus-btn"
-                onclick="newChat()"
-                title="New Chat">
-                +
-            </button>
-
-            <button
-                class="icon-btn"
-                onclick="toggleMenu()"
-                title="More">
-                ⋮
-            </button>
-
+            <button class="plus-btn" onclick="newChat()">+</button>
+            <button class="icon-btn" onclick="toggleMenu()">⋮</button>
         </div>
 
     </div>
 
-
     <div id="menu" class="menu">
-
-        <button onclick="upgrade()">
-            ⭐ Upgrade
-        </button>
-
-        <button onclick="aboutNirale()">
-            ℹ About Nirale AI
-        </button>
-
+        <button onclick="upgrade()">⭐ Upgrade</button>
     </div>
 
-
     <div id="chatbox">
-
         <div class="msg bot">
             Hello! I am Nirale AI. How can I help you today?
         </div>
-
     </div>
-
 
     <div class="input-container">
 
-        <button
-            class="icon-btn mic-btn"
-            onclick="startSpeech()"
-            title="Voice Input">
-            🎤
-        </button>
+        <button class="mic-btn" onclick="startSpeech()">🎤</button>
 
         <input
             type="text"
             id="msg"
             placeholder="Type a message..."
-            autocomplete="off">
+            autocomplete="off"
+        >
 
-        <button
-            class="send-btn"
-            onclick="send()">
-            Send
-        </button>
+        <button class="send-btn" onclick="send()">Send</button>
 
     </div>
 
 </div>
 
-
 <script>
-
 function toggleMenu() {
-
-    document
-        .getElementById("menu")
-        .classList.toggle("open");
-
+    document.getElementById("menu").classList.toggle("open");
 }
-
 
 function upgrade() {
-
     alert("Nirale AI Upgrade - Coming Soon");
-
     toggleMenu();
-
 }
-
-
-function aboutNirale() {
-
-    alert("Nirale AI v1.0");
-
-    toggleMenu();
-
-}
-
 
 function newChat() {
-
     document.getElementById("chatbox").innerHTML =
         '<div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>';
-
 }
 
-
 function startSpeech() {
-
     const SpeechRecognition =
         window.SpeechRecognition ||
         window.webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-
         alert("Speech recognition is not supported.");
-
         return;
     }
 
@@ -429,155 +353,91 @@ function startSpeech() {
     rec.lang = "kn-IN";
 
     rec.onresult = function(event) {
-
         document.getElementById("msg").value =
             event.results[0][0].transcript;
-
     };
 
     rec.start();
-
 }
 
-
 async function send() {
-
-    const input =
-        document.getElementById("msg");
-
-    const chat =
-        document.getElementById("chatbox");
-
-    const text =
-        input.value.trim();
+    const input = document.getElementById("msg");
+    const chat = document.getElementById("chatbox");
+    const text = input.value.trim();
 
     if (!text) {
         return;
     }
 
-
-    const userDiv =
-        document.createElement("div");
-
-    userDiv.className =
-        "msg user";
-
-    userDiv.textContent =
-        text;
-
+    const userDiv = document.createElement("div");
+    userDiv.className = "msg user";
+    userDiv.textContent = text;
     chat.appendChild(userDiv);
 
     input.value = "";
 
-
-    const botDiv =
-        document.createElement("div");
-
-    botDiv.className =
-        "msg bot";
-
-    botDiv.textContent =
-        "Thinking...";
-
+    const botDiv = document.createElement("div");
+    botDiv.className = "msg bot";
+    botDiv.textContent = "Thinking...";
     chat.appendChild(botDiv);
 
-    chat.scrollTop =
-        chat.scrollHeight;
-
+    chat.scrollTop = chat.scrollHeight;
 
     try {
+        const response = await fetch("/chat", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                message: text
+            })
+        });
 
-        const response =
-            await fetch("/chat", {
-
-                method: "POST",
-
-                headers: {
-                    "Content-Type": "application/json"
-                },
-
-                body: JSON.stringify({
-                    message: text
-                })
-
-            });
-
-
-        const data =
-            await response.json();
-
+        const data = await response.json();
 
         if (response.ok) {
-
-            botDiv.textContent =
-                data.reply;
-
+            botDiv.textContent = data.reply || "No response.";
         } else {
-
             botDiv.textContent =
                 "Error: " + (data.reply || "Server error");
-
         }
 
     } catch (error) {
-
-        botDiv.textContent =
-            "Connection error.";
-
+        botDiv.textContent = "Connection error.";
     }
 
-
-    chat.scrollTop =
-        chat.scrollHeight;
-
+    chat.scrollTop = chat.scrollHeight;
 }
 
-
-document
-    .getElementById("msg")
-    .addEventListener("keydown", function(event) {
-
-        if (event.key === "Enter") {
-
-            event.preventDefault();
-
-            send();
-
-        }
-
-    });
-
+document.getElementById("msg").addEventListener("keydown", function(event) {
+    if (event.key === "Enter") {
+        event.preventDefault();
+        send();
+    }
+});
 </script>
 
 </body>
-
 </html>
 """
 
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-
     try:
-
         current_key = (
             os.getenv("GEMINI_API_KEY")
             or os.getenv("GOOGLE_API_KEY")
         )
 
         if not current_key:
-            return {
-                "reply": "API Key is missing."
-            }
-
+            return {"reply": "API Key is missing."}
 
         message = request.message.strip()
         lower_message = message.lower()
 
-
-        # Creator name ONLY when user asks who created/made Nirale AI
-
-        creator_words = [
+        creator_questions = [
             "who created you",
             "who made you",
             "who is your creator",
@@ -590,55 +450,35 @@ async def chat(request: ChatRequest):
             "ನಿನ್ನನ್ನು ಯಾರು ಮಾಡಿದರು",
             "ನಿನ್ನನ್ನು ಯಾರು ಸೃಷ್ಟಿಸಿದರು",
             "ನಿನ್ನ creator ಯಾರು",
-            "ನಿರಲೆ ai ಯಾರು create ಮಾಡಿದರು",
-            "ನಿರಲೆ ai creator ಯಾರು"
+            "ನಿರಲೆ ai creator ಯಾರು",
+            "ನಿರಲೆ ai ಯಾರು create ಮಾಡಿದರು"
         ]
 
-
         if any(
-            word in lower_message
-            for word in creator_words
+            question in lower_message
+            for question in creator_questions
         ):
-
             return {
                 "reply": "I was created by Nagesh Nirale."
             }
 
+        genai.configure(api_key=current_key)
 
-        genai.configure(
-            api_key=current_key
-        )
+        model = genai.GenerativeModel("gemini-3.6-flash")
 
-
-        # Keep the model setting simple.
-        model = genai.GenerativeModel(
-            "gemini-2.5-flash"
-        )
-
-
-        response = model.generate_content(
-            message
-        )
-
+        response = model.generate_content(message)
 
         return {
             "reply": response.text
         }
 
-
     except Exception as e:
-
         error_message = str(e)
 
-        if (
-            "429" in error_message
-            or "Quota exceeded" in error_message
-        ):
-
+        if "429" in error_message or "Quota exceeded" in error_message:
             return {
                 "reply": "API quota limit reached."
             }
-
 
         return {
             "reply": "API Error: " + error_message
