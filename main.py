@@ -7,37 +7,34 @@ from pydantic import BaseModel
 import google.generativeai as genai
 
 
-# =====================================================
-# FASTAPI APP
-# =====================================================
+# =========================================================
+# FASTAPI
+# =========================================================
 
 app = FastAPI()
 
 
-# =====================================================
+# =========================================================
 # API KEY
-# =====================================================
+# =========================================================
 
-API_KEY = (
-    os.getenv("GEMINI_API_KEY")
-    or os.getenv("GOOGLE_API_KEY")
-)
+API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 if API_KEY:
     genai.configure(api_key=API_KEY)
 
 
-# =====================================================
-# REQUEST
-# =====================================================
+# =========================================================
+# REQUEST MODEL
+# =========================================================
 
 class ChatRequest(BaseModel):
     message: str
 
 
-# =====================================================
-# HOME
-# =====================================================
+# =========================================================
+# HOME PAGE
+# =========================================================
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -51,7 +48,7 @@ async def home():
 <meta charset="UTF-8">
 
 <meta name="viewport"
-content="width=device-width, initial-scale=1.0">
+      content="width=device-width, initial-scale=1.0">
 
 <title>Nirale AI</title>
 
@@ -65,33 +62,27 @@ html,
 body {
     margin: 0;
     padding: 0;
-
     width: 100%;
     height: 100%;
-
     background: #131314;
     color: #e3e3e3;
-
     font-family: Arial, sans-serif;
-
     overflow: hidden;
 }
 
 .app {
     width: 100%;
+    height: 100vh;
     height: 100dvh;
-
     display: flex;
     flex-direction: column;
-
     background: #131314;
 }
 
 
-/* HEADER */
+/* ================= HEADER ================= */
 
 .header {
-
     height: 58px;
     min-height: 58px;
 
@@ -102,39 +93,30 @@ body {
     padding: 0 12px;
 
     background: #1e1e1f;
-
     border-bottom: 1px solid #333;
 }
 
 .left,
 .right {
-
     display: flex;
     align-items: center;
-
     gap: 8px;
 }
 
 .logo {
-
     color: white;
-
     font-size: 18px;
-
     font-weight: bold;
 }
 
 .icon {
-
     width: 40px;
     height: 40px;
 
     border: none;
-
     border-radius: 50%;
 
     background: transparent;
-
     color: white;
 
     font-size: 22px;
@@ -143,24 +125,20 @@ body {
 }
 
 .icon:hover {
-
     background: #333;
 }
 
 
-/* PLUS */
+/* PLUS BUTTON */
 
 .plus {
-
     width: 40px;
     height: 40px;
 
     border: none;
-
     border-radius: 50%;
 
     background: #333;
-
     color: white;
 
     font-size: 25px;
@@ -168,11 +146,14 @@ body {
     cursor: pointer;
 }
 
+.plus:hover {
+    background: #444;
+}
 
-/* MENU */
+
+/* ================= MENU ================= */
 
 .menu {
-
     display: none;
 
     position: fixed;
@@ -180,26 +161,23 @@ body {
     top: 62px;
     right: 10px;
 
-    width: 180px;
+    width: 190px;
 
     padding: 6px;
 
     background: #1e1e1f;
 
     border: 1px solid #444;
-
     border-radius: 12px;
 
-    z-index: 1000;
+    z-index: 9999;
 }
 
 .menu.show {
-
     display: block;
 }
 
 .menu button {
-
     width: 100%;
 
     padding: 12px;
@@ -207,7 +185,6 @@ body {
     border: none;
 
     background: transparent;
-
     color: white;
 
     text-align: left;
@@ -215,18 +192,18 @@ body {
     border-radius: 8px;
 
     cursor: pointer;
+
+    font-size: 14px;
 }
 
 .menu button:hover {
-
     background: #333;
 }
 
 
-/* CHAT */
+/* ================= CHAT ================= */
 
 .chat {
-
     flex: 1;
 
     overflow-y: auto;
@@ -234,14 +211,12 @@ body {
     padding: 15px;
 
     display: flex;
-
     flex-direction: column;
 
     gap: 12px;
 }
 
 .message {
-
     max-width: 85%;
 
     padding: 11px 14px;
@@ -256,7 +231,6 @@ body {
 }
 
 .bot {
-
     align-self: flex-start;
 
     background: #1e1e1f;
@@ -265,7 +239,6 @@ body {
 }
 
 .user {
-
     align-self: flex-end;
 
     background: #2b2c2d;
@@ -274,25 +247,24 @@ body {
 }
 
 
-/* INPUT */
+/* ================= INPUT ================= */
 
 .input-area {
-
     min-height: 70px;
 
     padding: 10px;
 
     display: flex;
-
     align-items: center;
 
     gap: 7px;
+
+    background: #131314;
 
     border-top: 1px solid #222;
 }
 
 .input {
-
     flex: 1;
 
     min-width: 0;
@@ -314,10 +286,15 @@ body {
     font-size: 15px;
 }
 
-.mic {
+.input::placeholder {
+    color: #999;
+}
 
+.mic {
     width: 45px;
     height: 45px;
+
+    flex-shrink: 0;
 
     border-radius: 50%;
 
@@ -328,13 +305,16 @@ body {
     color: white;
 
     font-size: 18px;
+
+    cursor: pointer;
 }
 
 .send {
-
     height: 45px;
 
     padding: 0 17px;
+
+    flex-shrink: 0;
 
     border: none;
 
@@ -350,70 +330,54 @@ body {
 }
 
 
-/* MOBILE */
+/* ================= MOBILE ================= */
 
 @media (max-width: 600px) {
 
     .header {
-
         height: 54px;
         min-height: 54px;
-
-        padding: 0 8px;
+        padding: 0 7px;
     }
 
     .logo {
-
         font-size: 16px;
     }
 
     .icon,
     .plus {
-
         width: 38px;
         height: 38px;
     }
 
     .chat {
-
         padding: 10px;
     }
 
     .message {
-
-        max-width: 91%;
-
+        max-width: 92%;
         font-size: 14px;
     }
 
     .input-area {
-
         min-height: 66px;
-
         padding: 8px;
-
         gap: 5px;
     }
 
     .input {
-
         height: 44px;
-
         font-size: 14px;
     }
 
     .mic {
-
         width: 44px;
         height: 44px;
     }
 
     .send {
-
         height: 44px;
-
         padding: 0 13px;
-
         font-size: 13px;
     }
 }
@@ -434,8 +398,9 @@ body {
 
         <div class="left">
 
-            <button class="icon"
-                    onclick="alert('Nirale AI Menu')">
+            <button
+                class="icon"
+                onclick="menuAlert()">
                 ☰
             </button>
 
@@ -448,16 +413,17 @@ body {
 
         <div class="right">
 
-            <!-- PLUS NEXT TO NIRALE AI -->
-
-            <button class="plus"
-                    onclick="newChat()">
+            <button
+                class="plus"
+                onclick="newChat()"
+                title="New Chat">
                 +
             </button>
 
-
-            <button class="icon"
-                    onclick="toggleMenu()">
+            <button
+                class="icon"
+                onclick="toggleMenu()"
+                title="More">
                 ⋮
             </button>
 
@@ -468,14 +434,15 @@ body {
 
     <!-- THREE DOT MENU -->
 
-    <div id="menu"
-         class="menu">
+    <div
+        id="menu"
+        class="menu">
 
         <button onclick="upgrade()">
             ⭐ Upgrade
         </button>
 
-        <button onclick="about()">
+        <button onclick="aboutNirale()">
             ℹ About Nirale AI
         </button>
 
@@ -484,14 +451,13 @@ body {
 
     <!-- CHAT -->
 
-    <div id="chat"
-         class="chat">
+    <div
+        id="chat"
+        class="chat">
 
         <div class="message bot">
-
             Hello! I am Nirale AI.
             How can I help you today?
-
         </div>
 
     </div>
@@ -501,22 +467,23 @@ body {
 
     <div class="input-area">
 
-        <button class="mic"
-                onclick="voice()">
+        <button
+            class="mic"
+            onclick="startSpeech()"
+            title="Voice Input">
             🎤
         </button>
-
 
         <input
             id="input"
             class="input"
+            type="text"
             placeholder="Type a message..."
-            autocomplete="off"
-        >
+            autocomplete="off">
 
-
-        <button class="send"
-                onclick="send()">
+        <button
+            class="send"
+            onclick="sendMessage()">
             Send
         </button>
 
@@ -528,13 +495,29 @@ body {
 <script>
 
 
+// =========================================================
+// MENU
+// =========================================================
+
 function toggleMenu() {
 
-    document
-        .getElementById("menu")
-        .classList.toggle("show");
+    const menu =
+        document.getElementById("menu");
+
+    menu.classList.toggle("show");
 }
 
+
+function menuAlert() {
+
+    alert("Nirale AI Menu");
+
+}
+
+
+// =========================================================
+// UPGRADE
+// =========================================================
 
 function upgrade() {
 
@@ -546,28 +529,43 @@ function upgrade() {
 }
 
 
-function about() {
+// =========================================================
+// ABOUT
+// =========================================================
+
+function aboutNirale() {
 
     alert(
-        "Nirale AI v1.0\\n\\nCreated by Nagesh Nirale."
+        "Nirale AI v1.0"
     );
 
     toggleMenu();
 }
 
 
+// =========================================================
+// NEW CHAT
+// =========================================================
+
 function newChat() {
 
-    document.getElementById("chat").innerHTML =
+    const chat =
+        document.getElementById("chat");
 
-        '<div class="message bot">' +
-        'Hello! I am Nirale AI. ' +
-        'How can I help you today?' +
-        '</div>';
+    chat.innerHTML = `
+        <div class="message bot">
+            Hello! I am Nirale AI.
+            How can I help you today?
+        </div>
+    `;
 }
 
 
-function voice() {
+// =========================================================
+// VOICE
+// =========================================================
+
+function startSpeech() {
 
     const SpeechRecognition =
         window.SpeechRecognition ||
@@ -576,7 +574,7 @@ function voice() {
     if (!SpeechRecognition) {
 
         alert(
-            "Speech recognition is not supported."
+            "Speech recognition is not supported in this browser."
         );
 
         return;
@@ -587,17 +585,23 @@ function voice() {
 
     recognition.lang = "kn-IN";
 
-    recognition.onresult = function(event) {
+    recognition.onresult =
+        function(event) {
 
-        document.getElementById("input").value =
-            event.results[0][0].transcript;
-    };
+            document.getElementById("input").value =
+                event.results[0][0].transcript;
+
+        };
 
     recognition.start();
 }
 
 
-async function send() {
+// =========================================================
+// SEND MESSAGE
+// =========================================================
+
+async function sendMessage() {
 
     const input =
         document.getElementById("input");
@@ -613,31 +617,35 @@ async function send() {
     }
 
 
-    const user =
+    // USER MESSAGE
+
+    const userMessage =
         document.createElement("div");
 
-    user.className =
+    userMessage.className =
         "message user";
 
-    user.textContent =
+    userMessage.textContent =
         text;
 
-    chat.appendChild(user);
+    chat.appendChild(userMessage);
 
 
     input.value = "";
 
 
-    const bot =
+    // BOT THINKING
+
+    const botMessage =
         document.createElement("div");
 
-    bot.className =
+    botMessage.className =
         "message bot";
 
-    bot.textContent =
+    botMessage.textContent =
         "Thinking...";
 
-    chat.appendChild(bot);
+    chat.appendChild(botMessage);
 
 
     chat.scrollTop =
@@ -647,33 +655,43 @@ async function send() {
     try {
 
         const response =
-            await fetch("/chat", {
+            await fetch(
+                "/chat",
+                {
+                    method: "POST",
 
-                method: "POST",
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
 
-                headers: {
-                    "Content-Type":
-                    "application/json"
-                },
-
-                body: JSON.stringify({
-                    message: text
-                })
-
-            });
+                    body: JSON.stringify({
+                        message: text
+                    })
+                }
+            );
 
 
         const data =
             await response.json();
 
 
-        bot.textContent =
-            data.reply || "No response.";
+        if (response.ok) {
+
+            botMessage.textContent =
+                data.reply || "No response.";
+
+        } else {
+
+            botMessage.textContent =
+                data.reply || "Server error.";
+
+        }
 
 
     } catch (error) {
 
-        bot.textContent =
+        botMessage.textContent =
             "Connection error.";
 
     }
@@ -683,6 +701,10 @@ async function send() {
         chat.scrollHeight;
 }
 
+
+// =========================================================
+// ENTER KEY
+// =========================================================
 
 document
     .getElementById("input")
@@ -694,7 +716,8 @@ document
 
                 event.preventDefault();
 
-                send();
+                sendMessage();
+
             }
 
         }
@@ -703,13 +726,14 @@ document
 </script>
 
 </body>
+
 </html>
 """
 
 
-# =====================================================
+# =========================================================
 # CHAT API
-# =====================================================
+# =========================================================
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
@@ -728,13 +752,15 @@ async def chat(request: ChatRequest):
             }
 
 
-        message = request.message.strip()
+        message =
+            request.message.strip()
 
-        lower_message = message.lower()
+        lower_message =
+            message.lower()
 
 
         # =================================================
-        # CREATOR ANSWER ONLY IF ASKED
+        # CREATOR QUESTION
         # =================================================
 
         creator_questions = [
@@ -766,7 +792,7 @@ async def chat(request: ChatRequest):
 
             return {
                 "reply":
-                "I was created by Nagesh Nirale."
+                    "I was created by Nagesh Nirale."
             }
 
 
@@ -779,34 +805,42 @@ async def chat(request: ChatRequest):
         )
 
 
-        model = genai.GenerativeModel(
-            "gemini-3.6-flash"
-        )
+        model =
+            genai.GenerativeModel(
+                "gemini-3.6-flash"
+            )
 
 
         response =
-            model.generate_content(message)
+            model.generate_content(
+                message
+            )
 
 
         return {
-            "reply": response.text
+            "reply":
+                response.text
         }
 
 
     except Exception as e:
 
-        error = str(e)
+        error =
+            str(e)
 
 
-        if "429" in error or "Quota" in error:
+        if (
+            "429" in error
+            or "Quota" in error
+        ):
 
             return {
                 "reply":
-                "API quota limit reached."
+                    "API quota limit reached."
             }
 
 
         return {
             "reply":
-            "API Error: " + error
+                "API Error: " + error
         }
