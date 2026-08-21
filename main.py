@@ -37,7 +37,7 @@ async def read_root():
             input { flex: 1; padding: 12px 14px; border-radius: 24px; background: #1e1e1f; border: 1px solid #444; color: white; outline: none; font-size: 14px; min-width: 0; }
             button { padding: 10px 16px; border-radius: 24px; background: #ff4444; color: white; border: none; cursor: pointer; font-weight: bold; font-size: 14px; flex-shrink: 0; }
             .icon-btn { background: transparent; border: none; color: white; font-size: 20px; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; }
-            .mic-icon { background: #2b2c2d; width: 40px; height: 40px; border-radius: 50%; font-size: 16px; border: 1px solid #444; }
+            .mic-icon, .plus-icon { background: #2b2c2d; width: 40px; height: 40px; border-radius: 50%; font-size: 16px; border: 1px solid #444; display: flex; align-items: center; justify-content: center; }
         </style>
     </head>
     <body>
@@ -52,14 +52,14 @@ async def read_root():
                 <span>✨ Nirale AI</span>
             </div>
             <div class="header-right">
-                <button class="icon-btn" onclick="location.reload()" title="New Chat">＋</button>
                 <button class="icon-btn" onclick="alert('Login Required')" title="Login">⋮</button>
             </div>
         </div>
         <div id="chatbox">
-            <div class="msg bot">Hello! I am Nirale AI, created by Nagesh Nirale. How can I help you today?</div>
+            <div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>
         </div>
         <div class="input-box">
+            <button class="icon-btn plus-icon" onclick="location.reload()" title="New Chat">＋</button>
             <button class="icon-btn mic-icon" onclick="startSpeech()" title="Voice Input">🎤</button>
             <input type="text" id="msg" placeholder="Type a message..." onkeypress="if(event.key === 'Enter') send()">
             <button onclick="send()">Send</button>
@@ -116,7 +116,8 @@ async def chat(request: ChatRequest):
             return {"reply": "API Key is missing in environment variables."}
         
         genai.configure(api_key=current_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # ಇಲ್ಲಿ 404 ಎರ್ರರ್ ಬಾರದಂತೆ ಲೇಟೆಸ್ಟ್ ಸ್ಟೇಬಲ್ ಮಾಡೆಲ್ ಸೆಟ್ ಮಾಡಲಾಗಿದೆ
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         prompt = f"You are Nirale AI. If anyone asks who created you or who is your creator, you must state that you were created by Nagesh Nirale. User message: {request.message}"
         response = model.generate_content(prompt)
