@@ -22,62 +22,50 @@ async def read_root():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Nirale AI</title>
+        <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
         <style>
-            * { box-sizing: border-box; }
-            body { margin: 0; padding: 0; background: #131314; color: #e3e3e3; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-            #header { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: #1e1e1f; border-bottom: 1px solid #333; font-size: 18px; font-weight: bold; color: #fff; }
-            #chatbox { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-            .msg { padding: 12px 16px; border-radius: 12px; max-width: 80%; font-size: 15px; line-height: 1.4; word-break: break-word; }
-            .user { background: #2b2c2d; align-self: flex-end; color: white; }
-            .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
-            .input-box { padding: 16px; background: #131314; display: flex; gap: 10px; justify-content: center; align-items: center; }
-            input { flex: 1; max-width: 700px; padding: 12px 16px; border-radius: 24px; background: #1e1e1f; border: 1px solid #444; color: white; outline: none; font-size: 15px; }
-            button { padding: 10px 20px; border-radius: 24px; background: #ff4444; color: white; border: none; cursor: pointer; font-weight: bold; }
+            body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #131314; color: #e3e3e3; font-family: sans-serif; overflow: hidden; }
+            #sidebar { position: fixed; top: 0; left: -280px; width: 280px; height: 100%; background: #1e1e1f; border-right: 1px solid #333; z-index: 5000; transition: left 0.3s ease; padding: 20px; }
+            #sidebar.open { left: 0; }
+            #main-chat { height: 100%; display: flex; flex-direction: column; background: #131314; }
+            #top-nav { display: flex; justify-content: space-between; padding: 15px; border-bottom: 1px solid #333; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+            .msg { padding: 12px 16px; border-radius: 12px; max-width: 80%; }
+            .user { background: #2b2c2d; align-self: flex-end; }
+            .bot { background: #1e1e1f; border: 1px solid #333; }
+            .input-box { padding: 15px; display: flex; gap: 10px; }
+            input { flex: 1; padding: 12px; border-radius: 20px; background: #222; border: 1px solid #444; color: white; outline: none; }
+            button { padding: 10px 20px; border-radius: 20px; border: none; background: #ff4444; color: white; cursor: pointer; }
         </style>
     </head>
     <body>
-        <div id="header">
-            <span>✨ Nirale AI</span>
+        <div id="sidebar">
+            <h3 style="color:white">Menu</h3>
+            <button onclick="newChat()" style="width:100%; padding:10px; background:#444; color:white; border:none; cursor:pointer;">＋ New Chat</button>
         </div>
-        <div id="chatbox">
-            <div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>
-        </div>
-        <div class="input-box">
-            <input type="text" id="msg" placeholder="Type a message..." onkeypress="if(event.key === 'Enter') send()">
-            <button onclick="send()">Send</button>
+        <div id="main-chat">
+            <div id="top-nav">
+                <button onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button>
+                <span style="font-weight:bold">Nirale AI</span>
+                <button onclick="alert('Options')">⋮</button>
+            </div>
+            <div id="chatbox"><div class="msg bot">Hello! I am Nirale AI.</div></div>
+            <div class="input-box">
+                <input type="text" id="msg" placeholder="Ask something...">
+                <button onclick="send()">Send</button>
+            </div>
         </div>
         <script>
+            function newChat() { document.getElementById('chatbox').innerHTML = '<div class="msg bot">Hello! I am Nirale AI.</div>'; document.getElementById('sidebar').classList.remove('open'); }
             async function send() {
                 const input = document.getElementById('msg');
-                const chat = document.getElementById('chatbox');
                 const text = input.value.trim();
                 if(!text) return;
-
-                chat.innerHTML += '<div class="msg user">' + text + '</div>';
+                document.getElementById('chatbox').innerHTML += '<div class="msg user">' + text + '</div>';
                 input.value = '';
-
-                const botDiv = document.createElement('div');
-                botDiv.className = 'msg bot';
-                botDiv.textContent = 'Thinking...';
-                chat.appendChild(botDiv);
-                chat.scrollTop = chat.scrollHeight;
-
-                try {
-                    const response = await fetch('/chat', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({message: text})
-                    });
-                    const data = await response.json();
-                    if(response.ok) {
-                        botDiv.textContent = data.reply;
-                    } else {
-                        botDiv.textContent = 'Error: ' + (data.reply || 'Server error');
-                    }
-                } catch(e) {
-                    botDiv.textContent = 'Connection error. Please check server.';
-                }
-                chat.scrollTop = chat.scrollHeight;
+                const res = await fetch('/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message: text}) });
+                const data = await res.json();
+                document.getElementById('chatbox').innerHTML += '<div class="msg bot">' + marked.parse(data.reply) + '</div>';
             }
         </script>
     </body>
@@ -87,14 +75,11 @@ async def read_root():
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
-        current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not current_key:
-            return {"reply": "API Key is missing in environment variables."}
-        
-        genai.configure(api_key=current_key)
-        # Using the updated working model gemini-3.5-flash
+        genai.configure(api_key=API_KEY)
         model = genai.GenerativeModel('gemini-3.5-flash')
-        response = model.generate_content(request.message)
+        # ಇಲ್ಲಿ ನಿಮ್ಮ ಹೆಸರು ಸೇರಿಸಲಾಗಿದೆ
+        prompt = f"You are Nirale AI, created by Nagesh Nirale. Always introduce yourself as created by Nagesh Nirale. User says: {request.message}"
+        response = model.generate_content(prompt)
         return {"reply": response.text}
     except Exception as e:
-        return {"reply": f"API Error: {str(e)}"}
+        return {"reply": "Server error. Please try again."}
