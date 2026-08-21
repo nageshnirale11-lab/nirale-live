@@ -1,31 +1,46 @@
 import os
-from fastapi import FastAPI, UploadFile, File
+
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import google.generativeai as genai
 
+
 app = FastAPI()
 
-API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+# ================= API KEY =================
+
+API_KEY = (
+    os.getenv("GEMINI_API_KEY")
+    or os.getenv("GOOGLE_API_KEY")
+)
 
 if API_KEY:
     genai.configure(api_key=API_KEY)
 
 
+# ================= REQUEST MODEL =================
+
 class ChatRequest(BaseModel):
     message: str
 
+
+# ================= HOME =================
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     return """
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
+
 <meta charset="UTF-8">
 
 <meta name="viewport"
-content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+content="width=device-width, initial-scale=1.0,
+maximum-scale=1.0, user-scalable=no">
 
 <title>Nirale AI</title>
 
@@ -42,7 +57,7 @@ body {
     width: 100%;
     height: 100%;
     background: #131314;
-    color: #e3e3e3;
+    color: #e8eaed;
     font-family: Arial, sans-serif;
     overflow: hidden;
 }
@@ -56,7 +71,7 @@ body {
 }
 
 
-/* HEADER */
+/* ================= HEADER ================= */
 
 .header {
     height: 56px;
@@ -66,92 +81,152 @@ body {
     align-items: center;
     justify-content: space-between;
 
-    padding: 0 10px;
+    padding: 0 8px;
 
     background: #1e1e1f;
     border-bottom: 1px solid #333;
+
+    z-index: 100;
 }
 
 .header-left {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
 }
 
 .logo {
-    color: white;
+    color: #ffffff;
     font-size: 17px;
     font-weight: bold;
 }
 
-.menu-btn {
+.header-btn {
+    width: 42px;
+    height: 42px;
+
+    border: 0;
+    background: transparent;
+
+    color: white;
+
+    border-radius: 50%;
+
+    font-size: 22px;
+
+    cursor: pointer;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.header-btn:hover {
+    background: #303134;
+}
+
+
+/* ================= SIDEBAR ================= */
+
+.sidebar {
+    position: fixed;
+
+    top: 0;
+    left: -290px;
+
+    width: 280px;
+
+    height: 100vh;
+    height: 100dvh;
+
+    background: #1e1e1f;
+
+    border-right: 1px solid #444;
+
+    z-index: 10000;
+
+    padding: 18px;
+
+    transition: left 0.25s ease;
+
+    box-shadow: 5px 0 25px rgba(0,0,0,0.5);
+}
+
+.sidebar.open {
+    left: 0;
+}
+
+.sidebar-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 20px;
+}
+
+.sidebar-title h3 {
+    margin: 0;
+    color: white;
+}
+
+.close-sidebar {
     width: 40px;
     height: 40px;
 
     border: 0;
-    border-radius: 50%;
-
     background: transparent;
+
     color: white;
 
-    font-size: 22px;
+    font-size: 25px;
+
+    cursor: pointer;
 }
 
-
-/* THREE DOT MENU */
-
-.menu {
-    display: none;
-
-    position: fixed;
-
-    top: 61px;
-    right: 10px;
-
-    width: 170px;
-
-    background: #1e1e1f;
-
-    border: 1px solid #444;
-    border-radius: 12px;
-
-    padding: 6px;
-
-    z-index: 9999;
-
-    box-shadow: 0 8px 30px rgba(0,0,0,0.5);
-}
-
-.menu.open {
-    display: block;
-}
-
-.menu button {
+.sidebar-btn {
     width: 100%;
 
-    padding: 12px;
+    padding: 13px;
+
+    margin-bottom: 10px;
 
     border: 0;
 
-    background: transparent;
+    border-radius: 10px;
+
+    background: #303134;
 
     color: white;
 
     text-align: left;
 
-    border-radius: 8px;
+    font-size: 14px;
 
     cursor: pointer;
-
-    font-size: 14px;
 }
 
-.menu button:hover {
-    background: #333;
+.sidebar-btn:hover {
+    background: #3b3c3e;
+}
+
+.overlay {
+    display: none;
+
+    position: fixed;
+
+    inset: 0;
+
+    background: rgba(0,0,0,0.45);
+
+    z-index: 9999;
+}
+
+.overlay.open {
+    display: block;
 }
 
 
-/* CHAT */
+/* ================= CHAT ================= */
 
 #chatbox {
     flex: 1;
@@ -164,14 +239,16 @@ body {
     flex-direction: column;
 
     gap: 12px;
+
+    scroll-behavior: smooth;
 }
 
 .msg {
-    max-width: 85%;
+    max-width: 86%;
 
-    padding: 10px 14px;
+    padding: 11px 14px;
 
-    border-radius: 13px;
+    border-radius: 14px;
 
     font-size: 14px;
 
@@ -183,9 +260,11 @@ body {
 .user {
     align-self: flex-end;
 
-    background: #2b2c2d;
+    background: #303134;
 
     color: white;
+
+    border-bottom-right-radius: 5px;
 }
 
 .bot {
@@ -193,20 +272,57 @@ body {
 
     background: #1e1e1f;
 
+    color: #e8eaed;
+
     border: 1px solid #333;
 
-    color: #e3e3e3;
+    border-bottom-left-radius: 5px;
 }
 
 
-/* INPUT BAR */
+/* ================= PHOTO ================= */
 
-.input-container {
+.photo-msg {
+    padding: 7px !important;
+}
+
+.photo-preview {
+    display: block;
+
+    max-width: 280px;
+    max-height: 320px;
+
+    width: auto;
+    height: auto;
+
+    border-radius: 10px;
+
+    object-fit: contain;
+
+    margin-bottom: 5px;
+}
+
+.photo-name {
+    color: #aaa;
+
+    font-size: 12px;
+
+    padding: 3px 5px;
+}
+
+
+/* ================= FOOTER ================= */
+
+.footer {
     width: 100%;
 
-    min-height: 68px;
+    min-height: 70px;
 
-    padding: 9px;
+    padding: 9px 10px;
+
+    background: #131314;
+
+    border-top: 1px solid #242424;
 
     display: flex;
 
@@ -214,19 +330,17 @@ body {
 
     gap: 7px;
 
-    background: #131314;
-
-    border-top: 1px solid #222;
+    flex-shrink: 0;
 }
 
 
-/* ONE PLUS BUTTON */
+/* ================= PLUS ================= */
 
 .plus-btn {
     width: 45px;
     height: 45px;
 
-    flex-shrink: 0;
+    min-width: 45px;
 
     border-radius: 50%;
 
@@ -236,17 +350,23 @@ body {
 
     color: white;
 
-    font-size: 25px;
+    font-size: 26px;
 
     cursor: pointer;
 
     display: flex;
+
     align-items: center;
+
     justify-content: center;
 }
 
+.plus-btn:hover {
+    background: #3a3b3d;
+}
 
-/* MESSAGE */
+
+/* ================= INPUT ================= */
 
 #msg {
     flex: 1;
@@ -257,11 +377,11 @@ body {
 
     padding: 0 15px;
 
-    border-radius: 23px;
-
-    background: #1e1e1f;
+    border-radius: 24px;
 
     border: 1px solid #444;
+
+    background: #1e1e1f;
 
     color: white;
 
@@ -270,18 +390,22 @@ body {
     font-size: 15px;
 }
 
+#msg:focus {
+    border-color: #666;
+}
+
 #msg::placeholder {
     color: #999;
 }
 
 
-/* MIC */
+/* ================= MIC ================= */
 
 .mic-btn {
     width: 45px;
     height: 45px;
 
-    flex-shrink: 0;
+    min-width: 45px;
 
     border-radius: 50%;
 
@@ -294,40 +418,66 @@ body {
     font-size: 18px;
 
     cursor: pointer;
+
+    display: flex;
+
+    align-items: center;
+
+    justify-content: center;
+}
+
+.mic-btn:hover {
+    background: #3a3b3d;
+}
+
+.mic-btn.listening {
+    background: #ff4444;
 }
 
 
-/* SEND */
+/* ================= SEND ================= */
 
 .send-btn {
     height: 45px;
 
-    flex-shrink: 0;
+    min-width: 64px;
 
-    padding: 0 17px;
+    padding: 0 16px;
 
     border: 0;
 
-    border-radius: 23px;
+    border-radius: 24px;
 
     background: #ff4444;
 
     color: white;
+
+    font-size: 14px;
 
     font-weight: bold;
 
     cursor: pointer;
 }
 
+.send-btn:hover {
+    background: #ff5555;
+}
 
-/* MOBILE */
+
+/* ================= FILE ================= */
+
+#photoInput {
+    display: none;
+}
+
+
+/* ================= MOBILE ================= */
 
 @media (max-width: 600px) {
 
     .header {
         height: 54px;
         min-height: 54px;
-        padding: 0 6px;
     }
 
     .logo {
@@ -343,144 +493,214 @@ body {
         font-size: 14px;
     }
 
-    .input-container {
-        min-height: 65px;
-        padding: 8px;
-        gap: 5px;
+    .footer {
+        min-height: 64px;
+
+        padding: 8px 6px;
+
+        padding-bottom:
+        calc(8px + env(safe-area-inset-bottom));
     }
 
     .plus-btn,
     .mic-btn {
-        width: 43px;
-        height: 43px;
+        width: 42px;
+        height: 42px;
+        min-width: 42px;
     }
 
     #msg {
-        height: 43px;
+        height: 42px;
+
         font-size: 14px;
+
         padding: 0 12px;
     }
 
     .send-btn {
-        height: 43px;
-        padding: 0 12px;
+        height: 42px;
+
+        min-width: 58px;
+
+        padding: 0 11px;
+
         font-size: 13px;
+    }
+
+    .photo-preview {
+        max-width: 240px;
+        max-height: 280px;
+    }
+
+    .sidebar {
+        width: 275px;
+        left: -285px;
+    }
+
+    .sidebar.open {
+        left: 0;
     }
 }
 
 </style>
+
 </head>
 
 
 <body>
 
+
 <div class="app">
 
 
-    <!-- HEADER -->
+<!-- ================= SIDEBAR ================= -->
 
-    <div class="header">
+<div id="sidebar" class="sidebar">
 
-        <div class="header-left">
+    <div class="sidebar-title">
 
-            <button
-                class="menu-btn"
-                onclick="newChat()">
-                ☰
-            </button>
-
-            <span class="logo">
-                ✨ Nirale AI
-            </span>
-
-        </div>
+        <h3>Menu</h3>
 
         <button
-            class="menu-btn"
-            onclick="toggleMenu()">
-            ⋮
+            class="close-sidebar"
+            onclick="closeSidebar()">
+            ×
         </button>
 
     </div>
 
 
-    <!-- ONLY UPGRADE -->
+    <button
+        class="sidebar-btn"
+        onclick="newChat()">
+        ＋ New Chat
+    </button>
 
-    <div id="menu" class="menu">
 
-        <button onclick="upgrade()">
-            ⭐ Upgrade
+    <button
+        class="sidebar-btn"
+        onclick="showUpgrade()">
+        ⭐ Upgrade
+    </button>
+
+
+    <button
+        class="sidebar-btn"
+        onclick="closeSidebar()">
+        Close Menu
+    </button>
+
+</div>
+
+
+<!-- ================= OVERLAY ================= -->
+
+<div
+    id="overlay"
+    class="overlay"
+    onclick="closeSidebar()">
+</div>
+
+
+<!-- ================= HEADER ================= -->
+
+<div class="header">
+
+    <div class="header-left">
+
+        <button
+            class="header-btn"
+            onclick="openSidebar()"
+            title="Menu">
+            ☰
         </button>
+
+
+        <span class="logo">
+            ✨ Nirale AI
+        </span>
 
     </div>
 
 
-    <!-- CHAT -->
+    <button
+        class="header-btn"
+        onclick="showUpgrade()"
+        title="Upgrade">
+        ⋮
+    </button>
 
-    <div id="chatbox">
+</div>
 
-        <div class="msg bot">
-            Hello! I am Nirale AI. How can I help you today?
-        </div>
 
+<!-- ================= CHAT ================= -->
+
+<div id="chatbox">
+
+    <div class="msg bot">
+        Hello! I am Nirale AI. How can I help you today?
     </div>
 
-
-    <!-- INPUT -->
-
-    <div class="input-container">
+</div>
 
 
-        <!-- PHOTO + BUTTON -->
+<!-- ================= FOOTER ================= -->
 
-        <button
-            class="plus-btn"
-            onclick="document.getElementById('photoInput').click()"
-            title="Upload photo">
-            +
-        </button>
+<div class="footer">
 
 
-        <!-- HIDDEN PHOTO INPUT -->
+    <!-- ONE PLUS BUTTON -->
 
-        <input
-            type="file"
-            id="photoInput"
-            accept="image/*"
-            style="display:none"
-            onchange="photoSelected(this)"
-        >
-
-
-        <!-- MESSAGE -->
-
-        <input
-            type="text"
-            id="msg"
-            placeholder="Type a message..."
-            autocomplete="off"
-        >
+    <button
+        class="plus-btn"
+        onclick="openPhotoPicker()"
+        title="Upload photo">
+        +
+    </button>
 
 
-        <!-- MIC -->
+    <!-- PHOTO INPUT -->
 
-        <button
-            class="mic-btn"
-            onclick="startSpeech()"
-            title="Voice input">
-            🎤
-        </button>
+    <input
+        type="file"
+        id="photoInput"
+        accept="image/*"
+        onchange="handlePhoto(this)"
+    >
 
 
-        <!-- SEND -->
+    <!-- MESSAGE -->
 
-        <button
-            class="send-btn"
-            onclick="send()">
-            Send
-        </button>
+    <input
+        type="text"
+        id="msg"
+        placeholder="Type a message..."
+        autocomplete="off"
+    >
 
-    </div>
+
+    <!-- MIC -->
+
+    <button
+        id="micBtn"
+        class="mic-btn"
+        onclick="startSpeech()"
+        title="Voice input">
+        🎤
+    </button>
+
+
+    <!-- SEND -->
+
+    <button
+        class="send-btn"
+        onclick="send()">
+        Send
+    </button>
+
+
+</div>
+
 
 </div>
 
@@ -488,23 +708,29 @@ body {
 <script>
 
 
-function toggleMenu() {
+/* ================= SIDEBAR ================= */
+
+function openSidebar() {
 
     document
-        .getElementById("menu")
-        .classList.toggle("open");
+        .getElementById("sidebar")
+        .classList.add("open");
 
+    document
+        .getElementById("overlay")
+        .classList.add("open");
 }
 
 
-function upgrade() {
+function closeSidebar() {
 
-    alert(
-        "Nirale AI Upgrade - Coming Soon"
-    );
+    document
+        .getElementById("sidebar")
+        .classList.remove("open");
 
-    toggleMenu();
-
+    document
+        .getElementById("overlay")
+        .classList.remove("open");
 }
 
 
@@ -512,37 +738,121 @@ function newChat() {
 
     document
         .getElementById("chatbox")
-        .innerHTML =
-        '<div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>';
+        .innerHTML = `
+            <div class="msg bot">
+                Hello! I am Nirale AI. How can I help you today?
+            </div>
+        `;
 
+    closeSidebar();
 }
 
 
-function photoSelected(input) {
+/* ================= UPGRADE ================= */
 
-    if (!input.files || !input.files.length) {
+function showUpgrade() {
+
+    alert("Nirale AI Upgrade - Coming Soon");
+
+    closeSidebar();
+}
+
+
+/* ================= PHOTO ================= */
+
+function openPhotoPicker() {
+
+    document
+        .getElementById("photoInput")
+        .click();
+}
+
+
+function handlePhoto(input) {
+
+    if (
+        !input.files ||
+        input.files.length === 0
+    ) {
         return;
     }
 
+
     const file = input.files[0];
 
-    const chat =
-        document.getElementById("chatbox");
 
-    const msg =
-        document.createElement("div");
+    if (!file.type.startsWith("image/")) {
 
-    msg.className = "msg user";
+        alert("Please select an image.");
 
-    msg.textContent =
-        "📷 Photo selected: " + file.name;
+        input.value = "";
 
-    chat.appendChild(msg);
+        return;
+    }
 
-    chat.scrollTop =
-        chat.scrollHeight;
 
+    const reader = new FileReader();
+
+
+    reader.onload = function(event) {
+
+        const chat =
+            document.getElementById("chatbox");
+
+
+        const photoDiv =
+            document.createElement("div");
+
+        photoDiv.className =
+            "msg user photo-msg";
+
+
+        const image =
+            document.createElement("img");
+
+        image.className =
+            "photo-preview";
+
+        image.src =
+            event.target.result;
+
+        image.alt =
+            "Uploaded photo";
+
+
+        const name =
+            document.createElement("div");
+
+        name.className =
+            "photo-name";
+
+        name.textContent =
+            file.name;
+
+
+        photoDiv.appendChild(image);
+
+        photoDiv.appendChild(name);
+
+        chat.appendChild(photoDiv);
+
+
+        chat.scrollTop =
+            chat.scrollHeight;
+    };
+
+
+    reader.readAsDataURL(file);
+
+    input.value = "";
 }
+
+
+/* ================= MICROPHONE ================= */
+
+let recognition = null;
+
+let isListening = false;
 
 
 function startSpeech() {
@@ -551,34 +861,117 @@ function startSpeech() {
         window.SpeechRecognition ||
         window.webkitSpeechRecognition;
 
+
     if (!SpeechRecognition) {
 
         alert(
-            "Speech recognition is not supported."
+            "Voice input is not supported. Please use Chrome or Edge."
         );
 
         return;
     }
 
-    const rec =
+
+    if (
+        isListening &&
+        recognition
+    ) {
+
+        recognition.stop();
+
+        return;
+    }
+
+
+    recognition =
         new SpeechRecognition();
 
-    rec.lang = "kn-IN";
 
-    rec.onresult =
+    recognition.lang = "kn-IN";
+
+    recognition.continuous = false;
+
+    recognition.interimResults = false;
+
+    recognition.maxAlternatives = 1;
+
+
+    const micBtn =
+        document.getElementById("micBtn");
+
+
+    recognition.onstart =
+        function() {
+
+            isListening = true;
+
+            micBtn.classList.add(
+                "listening"
+            );
+
+            micBtn.textContent = "⏹";
+        };
+
+
+    recognition.onresult =
         function(event) {
+
+            const transcript =
+                event.results[0][0].transcript;
+
 
             document
                 .getElementById("msg")
-                .value =
-                event.results[0][0].transcript;
-
+                .value = transcript;
         };
 
-    rec.start();
 
+    recognition.onerror =
+        function(event) {
+
+            console.log(
+                "Speech error:",
+                event.error
+            );
+
+            if (
+                event.error === "not-allowed" ||
+                event.error === "permission-denied"
+            ) {
+
+                alert(
+                    "Please allow microphone permission."
+                );
+            }
+        };
+
+
+    recognition.onend =
+        function() {
+
+            isListening = false;
+
+            micBtn.classList.remove(
+                "listening"
+            );
+
+            micBtn.textContent = "🎤";
+        };
+
+
+    try {
+
+        recognition.start();
+
+    } catch (error) {
+
+        console.log(error);
+
+    }
 }
 
+
+/* ================= SEND ================= */
 
 async function send() {
 
@@ -588,13 +981,17 @@ async function send() {
     const chat =
         document.getElementById("chatbox");
 
+
     const text =
         input.value.trim();
+
 
     if (!text) {
         return;
     }
 
+
+    /* USER */
 
     const userDiv =
         document.createElement("div");
@@ -607,8 +1004,11 @@ async function send() {
 
     chat.appendChild(userDiv);
 
+
     input.value = "";
 
+
+    /* THINKING */
 
     const botDiv =
         document.createElement("div");
@@ -620,6 +1020,7 @@ async function send() {
         "Thinking...";
 
     chat.appendChild(botDiv);
+
 
     chat.scrollTop =
         chat.scrollHeight;
@@ -652,14 +1053,17 @@ async function send() {
         if (response.ok) {
 
             botDiv.textContent =
-                data.reply || "No response.";
+                data.reply ||
+                "No response.";
 
         } else {
 
             botDiv.textContent =
                 "Error: " +
-                (data.reply || "Server error");
-
+                (
+                    data.reply ||
+                    "Server error"
+                );
         }
 
 
@@ -668,14 +1072,16 @@ async function send() {
         botDiv.textContent =
             "Connection error.";
 
+        console.error(error);
     }
 
 
     chat.scrollTop =
         chat.scrollHeight;
-
 }
 
+
+/* ================= ENTER ================= */
 
 document
     .getElementById("msg")
@@ -688,9 +1094,7 @@ document
                 event.preventDefault();
 
                 send();
-
             }
-
         }
     );
 
@@ -701,6 +1105,8 @@ document
 """
 
 
+# ================= CHAT API =================
+
 @app.post("/chat")
 async def chat(request: ChatRequest):
 
@@ -710,6 +1116,7 @@ async def chat(request: ChatRequest):
             os.getenv("GEMINI_API_KEY")
             or os.getenv("GOOGLE_API_KEY")
         )
+
 
         if not current_key:
 
@@ -723,7 +1130,7 @@ async def chat(request: ChatRequest):
         lower_message = message.lower()
 
 
-        # Creator name ONLY for creator questions.
+        # ================= CREATOR =================
 
         creator_questions = [
 
@@ -736,7 +1143,9 @@ async def chat(request: ChatRequest):
             "creator of nirale ai",
             "who developed you",
             "who built you",
-            "your creator",
+            "who is your maker",
+            "who made nirale",
+            "who created nirale",
 
             "ನಿನ್ನನ್ನು ಯಾರು ಮಾಡಿದರು",
             "ನಿನ್ನನ್ನು ಯಾರು ಸೃಷ್ಟಿಸಿದರು",
@@ -744,7 +1153,9 @@ async def chat(request: ChatRequest):
             "ನಿರಲೆ ai creator ಯಾರು",
             "ನಿರಲೆ ai ಯಾರು create ಮಾಡಿದರು",
             "ನಿರಲೆ ai ಅನ್ನು ಯಾರು ಮಾಡಿದರು",
-            "ನಿರಲೆ ai ಯನ್ನು ಯಾರು ಸೃಷ್ಟಿಸಿದರು"
+            "ನಿರಲೆ ai ಯನ್ನು ಯಾರು ಸೃಷ್ಟಿಸಿದರು",
+            "ನಿರಲೆ ai ನ creator ಯಾರು",
+            "ನಿನ್ನನ್ನು create ಮಾಡಿದವರು ಯಾರು"
         ]
 
 
@@ -759,23 +1170,7 @@ async def chat(request: ChatRequest):
             }
 
 
-        # Prevent normal questions from changing the creator.
-
-        system_instruction = """
-You are Nirale AI.
-
-Answer the user's question naturally and helpfully.
-
-Your creator is Nagesh Nirale.
-
-IMPORTANT:
-Only mention Nagesh Nirale when the user specifically asks who created,
-made, developed, built, or is the creator of Nirale AI.
-
-If the user does not ask about your creator, do not mention the creator
-and do not discuss Google or Gemini as your creator.
-"""
-
+        # ================= GEMINI =================
 
         genai.configure(
             api_key=current_key
@@ -787,6 +1182,24 @@ and do not discuss Google or Gemini as your creator.
         )
 
 
+        system_instruction = """
+You are Nirale AI.
+
+Answer the user naturally, accurately and helpfully.
+
+Your creator is Nagesh Nirale.
+
+IMPORTANT:
+Only mention Nagesh Nirale when the user specifically asks
+who created, made, developed, built, or is the creator of Nirale AI.
+
+If the user does not ask about your creator,
+do not mention Nagesh Nirale.
+
+Do not say that Google or Gemini created Nirale AI.
+"""
+
+
         full_prompt = (
             system_instruction
             + "\n\nUser: "
@@ -794,9 +1207,8 @@ and do not discuss Google or Gemini as your creator.
         )
 
 
-        response = model.generate_content(
-            full_prompt
-        )
+        # IMPORTANT: this is one complete valid Python statement
+        response = model.generate_content(full_prompt)
 
 
         return {
