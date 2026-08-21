@@ -84,8 +84,8 @@ async def chat(request: ChatRequest):
     try:
         if not API_KEY:
             return {"reply": "API Key is missing."}
-        # Updated model name to gemini-2.5-flash
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        # Updated to gemini-3.6-flash as requested by the latest API
+        model = genai.GenerativeModel('gemini-3.6-flash')
         response = model.generate_content(request.message)
         return {"reply": response.text}
     except Exception as e:
