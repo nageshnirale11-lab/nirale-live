@@ -30,11 +30,11 @@ async def read_root():
             .header-left, .header-right { display: flex; gap: 10px; align-items: center; }
             #sidebar { position: fixed; top: 0; left: -250px; width: 250px; height: 100%; background: #1e1e1f; transition: 0.3s; z-index: 9999; padding: 20px; border-right: 1px solid #333; display: flex; flex-direction: column; gap: 15px; }
             #sidebar.open { left: 0; }
-            #chatbox { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 12px; padding-bottom: 20px; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 12px; }
             .msg { padding: 10px 14px; border-radius: 12px; max-width: 85%; font-size: 14px; line-height: 1.4; word-break: break-word; }
             .user { background: #2b2c2d; align-self: flex-end; color: white; }
             .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
-            .input-container { padding: 12px 15px; background: #131314; display: flex; gap: 10px; align-items: center; width: 100%; border-top: 1px solid #222; flex-shrink: 0; }
+            .input-container { padding: 10px 15px; background: #131314; display: flex; gap: 8px; align-items: center; width: 100%; border-top: 1px solid #222; flex-shrink: 0; }
             input { flex: 1; padding: 12px 16px; border-radius: 24px; background: #1e1e1f; border: 1px solid #444; color: white; outline: none; font-size: 15px; min-width: 0; }
             .icon-btn { background: transparent; border: none; color: white; font-size: 20px; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; }
             .mic-btn { background: #2b2c2d; width: 42px; height: 42px; border-radius: 50%; border: 1px solid #444; font-size: 16px; flex-shrink: 0; }
@@ -59,7 +59,7 @@ async def read_root():
                 </div>
             </div>
             <div id="chatbox">
-                <div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>
+                <div class="msg bot">Hello! I am Nirale AI, created by Nagesh Nirale. How can I help you today?</div>
             </div>
             <div class="input-container">
                 <button class="icon-btn mic-btn" onclick="startSpeech()" title="Voice Input">🎤</button>
@@ -70,7 +70,7 @@ async def read_root():
         <script>
             function startSpeech() {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-                if(!SpeechRecognition) { alert("Speech recognition not supported."); return; }
+                if(!SpeechRecognition) { alert("Speech recognition not supported in this browser."); return; }
                 const rec = new SpeechRecognition();
                 rec.lang = 'kn-IN';
                 rec.onresult = (e) => { document.getElementById('msg').value = e.results[0][0].transcript; };
@@ -123,11 +123,12 @@ async def chat(request: ChatRequest):
         genai.configure(api_key=current_key)
         model = genai.GenerativeModel('gemini-3.5-flash')
         
-        prompt = f"You are Nirale AI. If anyone asks who created you or who is your creator, you must state that you were created by Nagesh Nirale. User message: {request.message}"
+        # ಸೃಷ್ಟಿಕರ್ತರ ಬಗ್ಗೆ ಸ್ಪಷ್ಟ ಸೂಚನೆ
+        prompt = f"You are Nirale AI, created by Nagesh Nirale. If anyone asks who created you, your creator, or anything about your origin, you must clearly state that you were created by Nagesh Nirale. User message: {request.message}"
         response = model.generate_content(prompt)
         return {"reply": response.text}
     except Exception as e:
         err_msg = str(e)
         if "429" in err_msg or "Quota exceeded" in err_msg:
-            return {"reply": "API Quota limit reached (20 requests per day for free tier). Please wait a moment or use another API key."}
+            return {"reply": "API Quota limit reached (20 requests per day for free tier). Please wait a moment."}
         return {"reply": f"API Error: {err_msg}"}
