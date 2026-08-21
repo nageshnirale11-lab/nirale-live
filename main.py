@@ -25,7 +25,7 @@ async def read_root():
         <style>
             * { box-sizing: border-box; }
             html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #131314; color: #e3e3e3; font-family: sans-serif; overflow: hidden; }
-            #app { display: flex; flex-direction: column; height: 100vh; width: 100vw; position: relative; }
+            .app-container { display: flex; flex-direction: column; height: 100vh; width: 100vw; position: fixed; top: 0; left: 0; }
             #header { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; background: #1e1e1f; border-bottom: 1px solid #333; font-size: 18px; font-weight: bold; color: #fff; height: 50px; flex-shrink: 0; }
             .header-left, .header-right { display: flex; gap: 10px; align-items: center; }
             #sidebar { position: fixed; top: 0; left: -250px; width: 250px; height: 100%; background: #1e1e1f; transition: 0.3s; z-index: 9999; padding: 20px; border-right: 1px solid #333; display: flex; flex-direction: column; gap: 15px; }
@@ -34,15 +34,15 @@ async def read_root():
             .msg { padding: 10px 14px; border-radius: 12px; max-width: 85%; font-size: 14px; line-height: 1.4; word-break: break-word; }
             .user { background: #2b2c2d; align-self: flex-end; color: white; }
             .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
-            .input-container { padding: 10px 15px; background: #131314; display: flex; gap: 8px; align-items: center; width: 100%; border-top: 1px solid #222; flex-shrink: 0; }
-            input { flex: 1; padding: 12px 16px; border-radius: 24px; background: #1e1e1f; border: 1px solid #444; color: white; outline: none; font-size: 15px; min-width: 0; }
+            .input-container { padding: 10px 15px; background: #131314; display: flex; gap: 8px; align-items: center; width: 100%; border-top: 1px solid #222; flex-shrink: 0; height: 65px; }
+            input { flex: 1; height: 44px; padding: 0 16px; border-radius: 22px; background: #1e1e1f; border: 1px solid #444; color: white; outline: none; font-size: 15px; min-width: 0; }
             .icon-btn { background: transparent; border: none; color: white; font-size: 20px; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; }
-            .mic-btn { background: #2b2c2d; width: 42px; height: 42px; border-radius: 50%; border: 1px solid #444; font-size: 16px; flex-shrink: 0; }
-            .send-btn { background: #ff4444; color: white; border: none; padding: 10px 18px; border-radius: 20px; font-weight: bold; font-size: 14px; cursor: pointer; flex-shrink: 0; }
+            .mic-btn { background: #2b2c2d; width: 44px; height: 44px; border-radius: 50%; border: 1px solid #444; font-size: 16px; flex-shrink: 0; }
+            .send-btn { background: #ff4444; color: white; border: none; height: 44px; padding: 0 18px; border-radius: 22px; font-weight: bold; font-size: 14px; cursor: pointer; flex-shrink: 0; }
         </style>
     </head>
     <body>
-        <div id="app">
+        <div class="app-container">
             <div id="sidebar">
                 <h3 style="color:white; margin:0;">Menu</h3>
                 <button onclick="location.reload()" style="width:100%; padding:10px; border-radius:10px; background:#333; color:white; border:none; cursor:pointer;">＋ New Chat</button>
@@ -70,7 +70,7 @@ async def read_root():
         <script>
             function startSpeech() {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-                if(!SpeechRecognition) { alert("Speech recognition not supported in this browser."); return; }
+                if(!SpeechRecognition) { alert("Speech recognition not supported."); return; }
                 const rec = new SpeechRecognition();
                 rec.lang = 'kn-IN';
                 rec.onresult = (e) => { document.getElementById('msg').value = e.results[0][0].transcript; };
@@ -123,12 +123,15 @@ async def chat(request: ChatRequest):
         genai.configure(api_key=current_key)
         model = genai.GenerativeModel('gemini-3.5-flash')
         
-        # ಸೃಷ್ಟಿಕರ್ತರ ಬಗ್ಗೆ ಸ್ಪಷ್ಟ ಸೂಚನೆ
-        prompt = f"You are Nirale AI, created by Nagesh Nirale. If anyone asks who created you, your creator, or anything about your origin, you must clearly state that you were created by Nagesh Nirale. User message: {request.message}"
-        response = model.generate_content(prompt)
+        # ಸೃಷ್ಟಿಕರ್ತರ ಹೆಸರು ಬಲವಾಗಿ ಬರುವಂತೆ ಸಿಸ್ಟಮ್ ಇನ್‌ಸ್ಟ್ರಕ್ಷನ್ ಜುಳುಹು
+        chat_session = model.start_chat(history=[])
+        system_instruction = "You are Nirale AI. You were exclusively created by Nagesh Nirale. Never mention Google or Gemini as your creator. Your creator is Nagesh Nirale."
+        
+        full_prompt = f"{system_instruction}\nUser: {request.message}"
+        response = model.generate_content(full_prompt)
         return {"reply": response.text}
     except Exception as e:
         err_msg = str(e)
         if "429" in err_msg or "Quota exceeded" in err_msg:
-            return {"reply": "API Quota limit reached (20 requests per day for free tier). Please wait a moment."}
+            return {"reply": "API Quota limit reached (20 requests per day for free tier)."}
         return {"reply": f"API Error: {err_msg}"}
