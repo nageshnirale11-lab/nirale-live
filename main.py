@@ -25,35 +25,44 @@ async def read_root():
         <style>
             * { box-sizing: border-box; }
             body { margin: 0; padding: 0; background: #131314; color: #e3e3e3; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-            #header { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; background: #1e1e1f; border-bottom: 1px solid #333; height: 50px; flex-shrink: 0; }
-            #sidebar { position: fixed; top: 0; left: -250px; width: 250px; height: 100%; background: #1e1e1f; transition: 0.3s; z-index: 9999; padding: 20px; border-right: 1px solid #333; }
+            #header { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; background: #1e1e1f; border-bottom: 1px solid #333; font-size: 18px; font-weight: bold; color: #fff; flex-shrink: 0; height: 55px; }
+            .header-left, .header-right { display: flex; gap: 10px; align-items: center; }
+            #sidebar { position: fixed; top: 0; left: -260px; width: 260px; height: 100%; background: #1e1e1f; transition: 0.3s; z-index: 9999; padding: 20px; border-right: 1px solid #333; display: flex; flex-direction: column; gap: 15px; }
             #sidebar.open { left: 0; }
-            #chatbox { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 10px; }
-            .msg { padding: 10px 14px; border-radius: 12px; max-width: 85%; font-size: 14px; }
-            .user { background: #2b2c2d; align-self: flex-end; }
-            .bot { background: #1e1e1f; border: 1px solid #333; align-self: flex-start; }
-            .input-area { padding: 10px; display: flex; gap: 5px; background: #131314; align-items: center; flex-shrink: 0; }
-            input { flex: 1; padding: 12px; border-radius: 20px; background: #222; border: 1px solid #444; color: white; outline: none; }
-            button { background: #ff4444; color: white; border: none; padding: 10px 15px; border-radius: 50%; cursor: pointer; }
-            .menu-btn { background: transparent; color: #aaa; font-size: 20px; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+            .msg { padding: 10px 14px; border-radius: 12px; max-width: 85%; font-size: 14px; line-height: 1.4; word-break: break-word; }
+            .user { background: #2b2c2d; align-self: flex-end; color: white; }
+            .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
+            .input-box { padding: 10px 12px; background: #131314; display: flex; gap: 8px; justify-content: center; align-items: center; flex-shrink: 0; width: 100%; }
+            input { flex: 1; padding: 12px 14px; border-radius: 24px; background: #1e1e1f; border: 1px solid #444; color: white; outline: none; font-size: 14px; min-width: 0; }
+            button { padding: 10px 16px; border-radius: 24px; background: #ff4444; color: white; border: none; cursor: pointer; font-weight: bold; font-size: 14px; flex-shrink: 0; }
+            .icon-btn { background: transparent; border: none; color: white; font-size: 20px; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; }
+            .mic-icon { background: #2b2c2d; width: 40px; height: 40px; border-radius: 50%; font-size: 16px; border: 1px solid #444; }
         </style>
     </head>
     <body>
         <div id="sidebar">
-            <button onclick="document.getElementById('sidebar').classList.remove('open')">Close</button>
-            <h3 style="color:white">Menu</h3>
-            <button onclick="location.reload()" style="width:100%; border-radius:10px;">＋ New Chat</button>
+            <h3 style="color:white; margin:0;">Menu</h3>
+            <button onclick="location.reload()" style="width:100%; border-radius:10px; background:#333;">＋ New Chat</button>
+            <button onclick="document.getElementById('sidebar').classList.remove('open')" style="width:100%; border-radius:10px; background:#ff4444;">Close</button>
         </div>
         <div id="header">
-            <button class="menu-btn" onclick="document.getElementById('sidebar').classList.add('open')">☰</button>
-            <span style="font-weight:bold;">Nirale AI</span>
-            <button class="menu-btn" onclick="alert('Nirale AI v1.0')">⋮</button>
+            <div class="header-left">
+                <button class="icon-btn" onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button>
+                <span>✨ Nirale AI</span>
+            </div>
+            <div class="header-right">
+                <button class="icon-btn" onclick="location.reload()" title="New Chat">＋</button>
+                <button class="icon-btn" onclick="alert('Login Required')">⋮</button>
+            </div>
         </div>
-        <div id="chatbox"><div class="msg bot">Hello! I am Nirale AI, created by Nagesh Nirale.</div></div>
-        <div class="input-area">
-            <button onclick="startSpeech()">🎤</button>
-            <input type="text" id="msg" placeholder="Ask...">
-            <button onclick="send()">➔</button>
+        <div id="chatbox">
+            <div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>
+        </div>
+        <div class="input-box">
+            <button class="icon-btn mic-icon" onclick="startSpeech()" title="Voice Input">🎤</button>
+            <input type="text" id="msg" placeholder="Type a message..." onkeypress="if(event.key === 'Enter') send()">
+            <button onclick="send()">Send</button>
         </div>
         <script>
             function startSpeech() {
@@ -64,13 +73,35 @@ async def read_root():
             }
             async function send() {
                 const input = document.getElementById('msg');
+                const chat = document.getElementById('chatbox');
                 const text = input.value.trim();
                 if(!text) return;
-                document.getElementById('chatbox').innerHTML += '<div class="msg user">'+text+'</div>';
+
+                chat.innerHTML += '<div class="msg user">' + text + '</div>';
                 input.value = '';
-                const res = await fetch('/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message:text}) });
-                const data = await res.json();
-                document.getElementById('chatbox').innerHTML += '<div class="msg bot">'+data.reply+'</div>';
+
+                const botDiv = document.createElement('div');
+                botDiv.className = 'msg bot';
+                botDiv.textContent = 'Thinking...';
+                chat.appendChild(botDiv);
+                chat.scrollTop = chat.scrollHeight;
+
+                try {
+                    const response = await fetch('/chat', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({message: text})
+                    });
+                    const data = await response.json();
+                    if(response.ok) {
+                        botDiv.textContent = data.reply;
+                    } else {
+                        botDiv.textContent = 'Error: ' + (data.reply || 'Server error');
+                    }
+                } catch(e) {
+                    botDiv.textContent = 'Connection error. Please check server.';
+                }
+                chat.scrollTop = chat.scrollHeight;
             }
         </script>
     </body>
@@ -80,10 +111,15 @@ async def read_root():
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
-        genai.configure(api_key=API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"You are Nirale AI, created by Nagesh Nirale. Always mention your creator Nagesh Nirale if asked. User: {request.message}"
+        current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not current_key:
+            return {"reply": "API Key is missing in environment variables."}
+        
+        genai.configure(api_key=current_key)
+        model = genai.GenerativeModel('gemini-3.5-flash')
+        
+        prompt = f"You are Nirale AI. If anyone asks who created you or who is your creator, you must state that you were created by Nagesh Nirale. User message: {request.message}"
         response = model.generate_content(prompt)
         return {"reply": response.text}
     except Exception as e:
-        return {"reply": "Error, try again."}
+        return {"reply": f"API Error: {str(e)}"}
