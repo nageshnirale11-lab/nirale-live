@@ -15,7 +15,7 @@ if api_key:
 
 class ChatRequest(BaseModel):
     message: str
-    image: str = None  # Image support for base64 data
+    image: str = None
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -173,7 +173,12 @@ async def chat(request: ChatRequest):
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         if request.image:
-            header, encoded = request.image.split(",", 1)
+            # Safely parse base64 image data
+            if "," in request.image:
+                header, encoded = request.image.split(",", 1)
+            else:
+                encoded = request.image
+            
             image_bytes = base64.b64decode(encoded)
             image_part = {"mime_type": "image/jpeg", "data": image_bytes}
             response = model.generate_content([request.message, image_part])
