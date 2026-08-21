@@ -53,11 +53,11 @@ async def read_root():
             </div>
             <div class="header-right">
                 <button class="icon-btn" onclick="location.reload()" title="New Chat">＋</button>
-                <button class="icon-btn" onclick="alert('Login Required')">⋮</button>
+                <button class="icon-btn" onclick="alert('Login Required')" title="Login">⋮</button>
             </div>
         </div>
         <div id="chatbox">
-            <div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>
+            <div class="msg bot">Hello! I am Nirale AI, created by Nagesh Nirale. How can I help you today?</div>
         </div>
         <div class="input-box">
             <button class="icon-btn mic-icon" onclick="startSpeech()" title="Voice Input">🎤</button>
@@ -116,7 +116,7 @@ async def chat(request: ChatRequest):
             return {"reply": "API Key is missing in environment variables."}
         
         genai.configure(api_key=current_key)
-        model = genai.GenerativeModel('gemini-3.5-flash')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"You are Nirale AI. If anyone asks who created you or who is your creator, you must state that you were created by Nagesh Nirale. User message: {request.message}"
         response = model.generate_content(prompt)
