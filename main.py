@@ -6,7 +6,6 @@ import google.generativeai as genai
 
 app = FastAPI()
 
-# Direct API configuration to avoid environment issues
 API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 if API_KEY:
     genai.configure(api_key=API_KEY)
@@ -85,7 +84,8 @@ async def chat(request: ChatRequest):
     try:
         if not API_KEY:
             return {"reply": "API Key is missing."}
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Updated model name to gemini-2.5-flash
+        model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(request.message)
         return {"reply": response.text}
     except Exception as e:
