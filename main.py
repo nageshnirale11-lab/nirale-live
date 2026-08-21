@@ -6,6 +6,7 @@ import google.generativeai as genai
 
 app = FastAPI()
 
+# API Key configuration
 API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 if API_KEY:
     genai.configure(api_key=API_KEY)
@@ -23,56 +24,42 @@ async def read_root():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Nirale AI</title>
         <style>
-            body { margin: 0; padding: 0; background: #131314; color: #e3e3e3; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; }
-            #chatbox { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-            .msg { padding: 12px 16px; border-radius: 12px; max-width: 80%; font-size: 15px; line-height: 1.4; word-break: break-word; }
-            .user { background: #2b2c2d; align-self: flex-end; color: white; }
-            .bot { background: #1e1e1f; align-self: flex-start; border: 1px solid #333; color: #e3e3e3; }
-            .input-box { padding: 12px; background: #131314; display: flex; gap: 8px; justify-content: center; }
-            input { flex: 1; max-width: 700px; padding: 12px; border-radius: 24px; background: #1e1e1f; border: 1px solid #444; color: white; outline: none; font-size: 15px; }
-            button { padding: 0 20px; border-radius: 24px; background: #ff4444; color: white; border: none; cursor: pointer; font-weight: bold; }
+            body { margin: 0; padding: 0; background: #131314; color: #fff; font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; }
+            #chatbox { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+            .msg { padding: 12px 18px; border-radius: 15px; max-width: 80%; font-size: 16px; }
+            .user { background: #444; align-self: flex-end; }
+            .bot { background: #222; align-self: flex-start; border: 1px solid #444; }
+            .input-area { padding: 20px; background: #131314; display: flex; gap: 10px; }
+            input { flex: 1; padding: 12px; border-radius: 20px; border: 1px solid #555; background: #222; color: #fff; outline: none; }
+            button { padding: 10px 20px; border-radius: 20px; border: none; background: #ff4444; color: #fff; cursor: pointer; }
         </style>
     </head>
     <body>
-        <div id="chatbox">
-            <div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>
-        </div>
-        <div class="input-box">
-            <input type="text" id="msg" placeholder="Type a message..." onkeypress="if(event.key === 'Enter') send()">
+        <div id="chatbox"><div class="msg bot">Hello! I am Nirale AI. How can I help you?</div></div>
+        <div class="input-area">
+            <input type="text" id="msg" placeholder="Ask me...">
             <button onclick="send()">Send</button>
         </div>
         <script>
             async function send() {
                 const input = document.getElementById('msg');
-                const chat = document.getElementById('chatbox');
                 const text = input.value.trim();
                 if(!text) return;
-
-                chat.innerHTML += '<div class="msg user">' + text + '</div>';
+                
+                document.getElementById('chatbox').innerHTML += '<div class="msg user">' + text + '</div>';
                 input.value = '';
-
-                const botDiv = document.createElement('div');
-                botDiv.className = 'msg bot';
-                botDiv.textContent = 'Thinking...';
-                chat.appendChild(botDiv);
-                chat.scrollTop = chat.scrollHeight;
-
+                
                 try {
-                    const response = await fetch('/chat', {
+                    const res = await fetch('/chat', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({message: text})
                     });
-                    const data = await response.json();
-                    if(response.ok) {
-                        botDiv.textContent = data.reply;
-                    } else {
-                        botDiv.textContent = 'Error: ' + (data.reply || 'Server error');
-                    }
+                    const data = await res.json();
+                    document.getElementById('chatbox').innerHTML += '<div class="msg bot">' + data.reply + '</div>';
                 } catch(e) {
-                    botDiv.textContent = 'Connection error.';
+                    document.getElementById('chatbox').innerHTML += '<div class="msg bot" style="color:red">Server Error!</div>';
                 }
-                chat.scrollTop = chat.scrollHeight;
             }
         </script>
     </body>
@@ -82,11 +69,9 @@ async def read_root():
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
-        if not API_KEY:
-            return {"reply": "API Key is missing."}
-        # Updated to gemini-3.6-flash as requested by the latest API
-        model = genai.GenerativeModel('gemini-3.6-flash')
+        # Note: model name 'gemini-1.5-flash' is most reliable for general usage
+        model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(request.message)
         return {"reply": response.text}
     except Exception as e:
-        return {"reply": f"Error: {str(e)}"}
+        return {"reply": "Sorry, I am having trouble connecting. Please try again."}
