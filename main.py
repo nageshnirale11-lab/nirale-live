@@ -34,6 +34,10 @@ async def read_root():
             #main-chat { display: flex; flex-direction: column; height: 100%; width: 100%; background: #131314; position: relative; }
             #top-nav { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #222; background: #131314; height: 56px; }
             .menu-btn { background: transparent; border: none; color: #aaa; font-size: 22px; cursor: pointer; padding: 4px; }
+            .menu-dropdown { position: relative; }
+            .dropdown-content { display: none; position: absolute; right: 0; top: 35px; background: #1e1e1f; border: 1px solid #333; border-radius: 8px; width: 140px; z-index: 6000; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+            .dropdown-content button { width: 100%; background: transparent; border: none; color: #fff; padding: 10px 14px; text-align: left; cursor: pointer; font-size: 14px; }
+            .dropdown-content button:hover { background: #2b2c2d; }
             #chatbox { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; padding-bottom: 110px; align-items: center; }
             .chat-inner { width: 100%; max-width: 800px; display: flex; flex-direction: column; gap: 12px; }
             .msg { padding: 12px 16px; border-radius: 14px; max-width: 85%; font-size: 15px; line-height: 1.4; word-break: break-word; }
@@ -44,6 +48,9 @@ async def read_root():
             input[type="text"] { flex: 1; background: transparent; border: none; color: white; outline: none; font-size: 15px; padding: 6px 4px; }
             .icon-btn { background: transparent; border: none; color: #aaa; font-size: 18px; cursor: pointer; padding: 6px; }
             .send { background: #ff4444; color: white; border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; }
+            #login-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 7000; justify-content: center; align-items: center; }
+            .modal-content { background: #1e1e1f; padding: 24px; border-radius: 12px; width: 90%; max-width: 320px; border: 1px solid #333; display: flex; flex-direction: column; gap: 12px; }
+            .modal-content input { background: #131314; border: 1px solid #444; padding: 8px; border-radius: 6px; color: white; outline: none; }
         </style>
     </head>
     <body>
@@ -55,15 +62,30 @@ async def read_root():
             <button class="new-chat-btn" onclick="newChat()">＋ New Chat</button>
         </div>
 
+        <div id="login-modal">
+            <div class="modal-content">
+                <h3 style="margin:0; color:#fff;">Login</h3>
+                <input type="text" id="username" placeholder="Username">
+                <input type="password" id="password" placeholder="Password">
+                <button onclick="alert('Login feature coming soon!'); closeLogin();" style="background:#ff4444; color:white; border:none; padding:8px; border-radius:6px; cursor:pointer;">Submit</button>
+                <button onclick="closeLogin()" style="background:#333; color:white; border:none; padding:6px; border-radius:6px; cursor:pointer;">Cancel</button>
+            </div>
+        </div>
+
         <div id="main-chat">
             <div id="top-nav">
                 <button class="menu-btn" onclick="toggleSidebar()">☰</button>
                 <span style="font-weight:bold; color:#fff;">Nirale AI</span>
-                <button class="menu-btn" onclick="alert('Nirale AI - Created by Nagesh Nirale')">⋮</button>
+                <div class="menu-dropdown">
+                    <button class="menu-btn" onclick="toggleDropdown()">⋮</button>
+                    <div id="dropdown-menu" class="dropdown-content">
+                        <button onclick="openLogin()">🔐 Login</button>
+                    </div>
+                </div>
             </div>
             <div id="chatbox">
                 <div class="chat-inner" id="chat-inner">
-                    <div class="msg bot">Hello! I am Nirale AI, created by Nagesh Nirale. How can I help you today?</div>
+                    <div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>
                 </div>
             </div>
             <div class="input-container">
@@ -77,8 +99,12 @@ async def read_root():
 
         <script>
             function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+            function toggleDropdown() { const m = document.getElementById('dropdown-menu'); m.style.display = m.style.display === 'block' ? 'none' : 'block'; }
+            function openLogin() { document.getElementById('login-modal').style.display = 'flex'; toggleDropdown(); }
+            function closeLogin() { document.getElementById('login-modal').style.display = 'none'; }
+            
             function newChat() { 
-                document.getElementById('chat-inner').innerHTML = '<div class="msg bot">Hello! I am Nirale AI, created by Nagesh Nirale. How can I help you today?</div>'; 
+                document.getElementById('chat-inner').innerHTML = '<div class="msg bot">Hello! I am Nirale AI. How can I help you today?</div>'; 
                 toggleSidebar(); 
             }
             
@@ -117,7 +143,7 @@ async def read_root():
                     if(response.ok) {
                         botDiv.innerHTML = marked.parse(data.reply);
                     } else {
-                        botDiv.textContent = 'Server Error: ' + (data.reply || 'Unknown');
+                        botDiv.textContent = data.reply || 'Server Error';
                     }
                 } catch(e) {
                     botDiv.textContent = 'Connection error.';
@@ -132,14 +158,15 @@ async def read_root():
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
-        if not API_KEY:
+        active_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not active_key:
             return {"reply": "API Key is missing."}
         
-        genai.configure(api_key=API_KEY)
-        # ಇಲ್ಲಿ ಹೊಸ ಹಾಗೂ ಸ್ಟೇಬಲ್ ಆದ ಮಾಡೆಲ್ ಬಳಸಲಾಗಿದೆ
-        model = genai.GenerativeModel('gemini-3.5-flash')
+        genai.configure(api_key=active_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
-        prompt = f"Your name is Nirale AI. You were exclusively created by Nagesh Nirale. Always mention that you are created by Nagesh Nirale when asked about your creator. User message: {request.message}"
+        # ಯಾರು ಸೃಷ್ಟಿಸಿದ್ದು ಎಂದು ಕೇಳಿದಾಗ ಮಾತ್ರ ನಾಗೇಶ್ ನಿರಲೆ ಎಂದು ಹೇಳಲು ಸಿಸ್ಟಮ್ ಪ್ರಾಂಪ್ಟ್
+        prompt = f"You are Nirale AI. If anyone asks who created you or who is your creator, you must say you were created by Nagesh Nirale. User message: {request.message}"
         response = model.generate_content(prompt)
         return {"reply": response.text}
     except Exception as e:
