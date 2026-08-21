@@ -6,7 +6,6 @@ import google.generativeai as genai
 
 app = FastAPI()
 
-# Secure API configuration
 API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 if API_KEY:
     genai.configure(api_key=API_KEY)
@@ -123,14 +122,16 @@ async def read_root():
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({message: text})
                     });
+                    
                     const data = await response.json();
+                    
                     if(response.ok) {
-                        botDiv.innerHTML = marked.parse(data.reply);
+                        botDiv.innerHTML = marked.parse(data.reply || "No response");
                     } else {
-                        botDiv.textContent = 'Server Error: ' + (data.reply || 'Unknown error');
+                        botDiv.textContent = 'Server Error: ' + (data.reply || 'Check API Key');
                     }
                 } catch(e) {
-                    botDiv.textContent = 'Error connecting to server.';
+                    botDiv.textContent = 'Connection error. Please check server.';
                 }
                 chat.scrollTop = chat.scrollHeight;
             }
@@ -142,11 +143,11 @@ async def read_root():
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
-        current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not current_key:
+        active_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not active_key:
             return {"reply": "API Key is missing in environment variables."}
         
-        genai.configure(api_key=current_key)
+        genai.configure(api_key=active_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(request.message)
         return {"reply": response.text}
