@@ -1,43 +1,1056 @@
 import os
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+import re
+import json
+import base64
+import sqlite3
+import hashlib
+import secrets
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+
 import google.generativeai as genai
 
-app = FastAPI()
 
-API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+# =========================================================
+# NIRALE AI
+# Single-file FastAPI application
+# =========================================================
 
-if API_KEY:
-    genai.configure(api_key=API_KEY)
+app = FastAPI(title="Nirale AI")
+
+DB_FILE = os.getenv("NIRALE_DB", "nirale.db")
+
+GOOGLE_API_KEY = (
+    os.getenv("GOOGLE_API_KEY")
+    or os.getenv("GEMINI_API_KEY")
+)
+
+GEMINI_MODEL = os.getenv(
+    "GEMINI_MODEL",
+    "gemini-3.6-flash"
+)
+
+OWNER_EMAIL = os.getenv(
+    "OWNER_EMAIL",
+    ""
+).strip().lower()
+
+
+# =========================================================
+# DATABASE
+# =========================================================
+
+def db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = db()
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            plan TEXT DEFAULT 'Free',
+            created_at TEXT NOT NULL,
+            last_active TEXT
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            title TEXT DEFAULT 'New Chat',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(chat_id) REFERENCES chats(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            chat_id INTEGER,
+            question TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def hash_password(password: str, salt: Optional[str] = None):
+    if salt is None:
+        salt = secrets.token_hex(16)
+
+    derived = hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=bytes.fromhex(salt),
+        n=16384,
+        r=8,
+        p=1,
+        dklen=64
+    )
+
+    return derived.hex(), salt
+
+
+def verify_password(password, stored_hash, salt):
+    new_hash, _ = hash_password(password, salt)
+    return secrets.compare_digest(new_hash, stored_hash)
+
+
+def create_session(user_id):
+    token = secrets.token_urlsafe(48)
+
+    conn = db()
+    conn.execute(
+        "INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)",
+        (token, user_id, now())
+    )
+    conn.commit()
+    conn.close()
+
+    return token
+
+
+def get_current_user(request: Request):
+    token = request.cookies.get("nirale_session")
+
+    if not token:
+        return None
+
+    conn = db()
+
+    row = conn.execute("""
+        SELECT users.*
+        FROM users
+        JOIN sessions ON sessions.user_id = users.id
+        WHERE sessions.token = ?
+    """, (token,)).fetchone()
+
+    if row:
+        conn.execute(
+            "UPDATE users SET last_active=? WHERE id=?",
+            (now(), row["id"])
+        )
+        conn.commit()
+
+    conn.close()
+
+    return row
+
+
+def require_user(request: Request):
+    user = get_current_user(request)
+
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Login required"
+        )
+
+    return user
+
+
+def is_creator_question(message):
+    text = message.lower().strip()
+
+    phrases = [
+        "who created you",
+        "who made you",
+        "who is your creator",
+        "who developed you",
+        "who built you",
+        "nimmannu yaru create madidru",
+        "nimmannu yaru madidru",
+        "nimmanna yaru create madidare",
+        "ninna creator yaru",
+        "ninna create madidavaru yaru",
+        "ನಿನ್ನನ್ನು ಯಾರು ರಚಿಸಿದ್ದಾರೆ",
+        "ನಿನ್ನನ್ನು ಯಾರು ಮಾಡಿದರು",
+        "ನಿನ್ನ ಕ್ರಿಯೇಟರ್ ಯಾರು",
+        "ನಿನ್ನನ್ನು ಯಾರು create ಮಾಡಿದರು",
+    ]
+
+    return any(x in text for x in phrases)
+
+
+def creator_answer():
+    return "ನನ್ನನ್ನು Nagesh Nirale ಅವರು ರಚಿಸಿದ್ದಾರೆ."
+
+
+# =========================================================
+# MODELS
+# =========================================================
+
+class AuthRequest(BaseModel):
+    email: str
+    password: str
 
 
 class ChatRequest(BaseModel):
     message: str
+    chat_id: Optional[int] = None
+    image_data: Optional[str] = None
 
 
-@app.get("/", response_class=HTMLResponse)
-async def read_root():
-    return """
+class PlanRequest(BaseModel):
+    plan: str
+
+
+# =========================================================
+# AUTH
+# =========================================================
+
+@app.post("/api/signup")
+async def signup(data: AuthRequest):
+
+    email = data.email.strip().lower()
+    password = data.password
+
+    if not re.match(
+        r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+        email
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Valid email required"
+        )
+
+    if len(password) < 6:
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be at least 6 characters"
+        )
+
+    password_hash, salt = hash_password(password)
+
+    conn = db()
+
+    try:
+        cursor = conn.execute("""
+            INSERT INTO users(
+                email,
+                password_hash,
+                salt,
+                plan,
+                created_at,
+                last_active
+            )
+            VALUES(?,?,?,?,?,?)
+        """, (
+            email,
+            password_hash,
+            salt,
+            "Free",
+            now(),
+            now()
+        ))
+
+        conn.commit()
+        user_id = cursor.lastrowid
+
+    except sqlite3.IntegrityError:
+        conn.close()
+
+        raise HTTPException(
+            status_code=409,
+            detail="Account already exists"
+        )
+
+    conn.close()
+
+    token = create_session(user_id)
+
+    response = JSONResponse({
+        "ok": True,
+        "email": email
+    })
+
+    response.set_cookie(
+        "nirale_session",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=60 * 60 * 24 * 30
+    )
+
+    return response
+
+
+@app.post("/api/login")
+async def login(data: AuthRequest):
+
+    email = data.email.strip().lower()
+
+    conn = db()
+
+    user = conn.execute(
+        "SELECT * FROM users WHERE email=?",
+        (email,)
+    ).fetchone()
+
+    conn.close()
+
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
+        )
+
+    if not verify_password(
+        data.password,
+        user["password_hash"],
+        user["salt"]
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
+        )
+
+    token = create_session(user["id"])
+
+    response = JSONResponse({
+        "ok": True,
+        "email": user["email"],
+        "plan": user["plan"]
+    })
+
+    response.set_cookie(
+        "nirale_session",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=60 * 60 * 24 * 30
+    )
+
+    return response
+
+
+@app.post("/api/logout")
+async def logout(request: Request):
+
+    token = request.cookies.get("nirale_session")
+
+    if token:
+        conn = db()
+        conn.execute(
+            "DELETE FROM sessions WHERE token=?",
+            (token,)
+        )
+        conn.commit()
+        conn.close()
+
+    response = JSONResponse({"ok": True})
+
+    response.delete_cookie("nirale_session")
+
+    return response
+
+
+@app.get("/api/me")
+async def me(request: Request):
+
+    user = get_current_user(request)
+
+    if not user:
+        return {
+            "logged_in": False
+        }
+
+    return {
+        "logged_in": True,
+        "id": user["id"],
+        "email": user["email"],
+        "plan": user["plan"],
+        "created_at": user["created_at"],
+        "last_active": user["last_active"]
+    }
+
+
+# =========================================================
+# CHAT HISTORY
+# =========================================================
+
+@app.get("/api/chats")
+async def chats(request: Request):
+
+    user = require_user(request)
+
+    conn = db()
+
+    rows = conn.execute("""
+        SELECT id,title,created_at,updated_at
+        FROM chats
+        WHERE user_id=?
+        ORDER BY updated_at DESC
+        LIMIT 100
+    """, (user["id"],)).fetchall()
+
+    conn.close()
+
+    return [
+        {
+            "id": row["id"],
+            "title": row["title"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"]
+        }
+        for row in rows
+    ]
+
+
+@app.get("/api/chats/{chat_id}")
+async def get_chat(
+    chat_id: int,
+    request: Request
+):
+
+    user = require_user(request)
+
+    conn = db()
+
+    chat = conn.execute("""
+        SELECT *
+        FROM chats
+        WHERE id=? AND user_id=?
+    """, (
+        chat_id,
+        user["id"]
+    )).fetchone()
+
+    if not chat:
+        conn.close()
+
+        raise HTTPException(
+            status_code=404,
+            detail="Chat not found"
+        )
+
+    messages = conn.execute("""
+        SELECT role,content,created_at
+        FROM messages
+        WHERE chat_id=? AND user_id=?
+        ORDER BY id ASC
+    """, (
+        chat_id,
+        user["id"]
+    )).fetchall()
+
+    conn.close()
+
+    return {
+        "id": chat["id"],
+        "title": chat["title"],
+        "messages": [
+            {
+                "role": x["role"],
+                "content": x["content"],
+                "created_at": x["created_at"]
+            }
+            for x in messages
+        ]
+    }
+
+
+@app.delete("/api/chats/{chat_id}")
+async def delete_chat(
+    chat_id: int,
+    request: Request
+):
+
+    user = require_user(request)
+
+    conn = db()
+
+    conn.execute("""
+        DELETE FROM messages
+        WHERE chat_id=? AND user_id=?
+    """, (
+        chat_id,
+        user["id"]
+    ))
+
+    conn.execute("""
+        DELETE FROM chats
+        WHERE id=? AND user_id=?
+    """, (
+        chat_id,
+        user["id"]
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return {"ok": True}
+
+
+# =========================================================
+# GEMINI
+# =========================================================
+
+def generate_ai_reply(message, image_data=None):
+
+    if is_creator_question(message):
+        return creator_answer()
+
+    if not GOOGLE_API_KEY:
+        return (
+            "Gemini API key configure ಆಗಿಲ್ಲ. "
+            "Render/local environmentನಲ್ಲಿ "
+            "GOOGLE_API_KEY ಅಥವಾ GEMINI_API_KEY set ಮಾಡಿ."
+        )
+
+    try:
+
+        genai.configure(
+            api_key=GOOGLE_API_KEY
+        )
+
+        model = genai.GenerativeModel(
+            GEMINI_MODEL
+        )
+
+        system_instruction = """
+You are Nirale AI.
+
+You were created by Nagesh Nirale.
+
+Answer the user's question accurately and helpfully.
+
+Important:
+- Reply in the language used by the user whenever possible.
+- Support Kannada, English, Hindi, Telugu, Tamil,
+  Malayalam, Marathi, Bengali, Gujarati, Punjabi,
+  Urdu and other commonly supported languages.
+- If the user asks for code, provide clean code.
+- Explain code clearly when useful.
+- Use Markdown.
+- Put programming code inside fenced code blocks.
+- Do not claim that you performed an action you did not perform.
+"""
+
+        prompt = (
+            system_instruction
+            + "\n\nUSER:\n"
+            + message
+        )
+
+        contents = [prompt]
+
+        # Optional image input
+        if image_data:
+
+            try:
+                if "," in image_data:
+                    header, encoded = image_data.split(
+                        ",",
+                        1
+                    )
+                else:
+                    header = ""
+                    encoded = image_data
+
+                raw = base64.b64decode(
+                    encoded
+                )
+
+                mime = "image/jpeg"
+
+                if "image/png" in header:
+                    mime = "image/png"
+                elif "image/webp" in header:
+                    mime = "image/webp"
+
+                contents.append({
+                    "mime_type": mime,
+                    "data": raw
+                })
+
+            except Exception:
+                pass
+
+        response = model.generate_content(
+            contents
+        )
+
+        if getattr(response, "text", None):
+            return response.text
+
+        return "ಕ್ಷಮಿಸಿ, ಉತ್ತರ ಸಿಗಲಿಲ್ಲ."
+
+    except Exception as e:
+
+        return (
+            "AI response error: "
+            + str(e)
+        )
+
+
+# =========================================================
+# CHAT
+# =========================================================
+
+@app.post("/api/chat")
+async def api_chat(
+    data: ChatRequest,
+    request: Request
+):
+
+    user = require_user(request)
+
+    message = data.message.strip()
+
+    if not message:
+        raise HTTPException(
+            status_code=400,
+            detail="Message required"
+        )
+
+    conn = db()
+
+    chat_id = data.chat_id
+
+    if chat_id:
+
+        chat = conn.execute("""
+            SELECT id
+            FROM chats
+            WHERE id=? AND user_id=?
+        """, (
+            chat_id,
+            user["id"]
+        )).fetchone()
+
+        if not chat:
+            conn.close()
+
+            raise HTTPException(
+                status_code=404,
+                detail="Chat not found"
+            )
+
+    else:
+
+        title = message[:60]
+
+        cursor = conn.execute("""
+            INSERT INTO chats(
+                user_id,
+                title,
+                created_at,
+                updated_at
+            )
+            VALUES(?,?,?,?)
+        """, (
+            user["id"],
+            title,
+            now(),
+            now()
+        ))
+
+        chat_id = cursor.lastrowid
+
+    conn.execute("""
+        INSERT INTO messages(
+            chat_id,
+            user_id,
+            role,
+            content,
+            created_at
+        )
+        VALUES(?,?,?,?,?)
+    """, (
+        chat_id,
+        user["id"],
+        "user",
+        message,
+        now()
+    ))
+
+    conn.execute("""
+        INSERT INTO usage(
+            user_id,
+            chat_id,
+            question,
+            created_at
+        )
+        VALUES(?,?,?,?)
+    """, (
+        user["id"],
+        chat_id,
+        message,
+        now()
+    ))
+
+    conn.execute("""
+        UPDATE chats
+        SET updated_at=?
+        WHERE id=?
+    """, (
+        now(),
+        chat_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    reply = generate_ai_reply(
+        message,
+        data.image_data
+    )
+
+    conn = db()
+
+    conn.execute("""
+        INSERT INTO messages(
+            chat_id,
+            user_id,
+            role,
+            content,
+            created_at
+        )
+        VALUES(?,?,?,?,?)
+    """, (
+        chat_id,
+        user["id"],
+        "assistant",
+        reply,
+        now()
+    ))
+
+    conn.execute("""
+        UPDATE chats
+        SET updated_at=?
+        WHERE id=?
+    """, (
+        now(),
+        chat_id
+    ))
+
+    conn.execute("""
+        UPDATE users
+        SET last_active=?
+        WHERE id=?
+    """, (
+        now(),
+        user["id"]
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "ok": True,
+        "chat_id": chat_id,
+        "reply": reply
+    }
+
+
+# =========================================================
+# ACCOUNT
+# =========================================================
+
+@app.get("/api/account")
+async def account(request: Request):
+
+    user = require_user(request)
+
+    conn = db()
+
+    count = conn.execute("""
+        SELECT COUNT(*)
+        FROM usage
+        WHERE user_id=?
+    """, (
+        user["id"],
+    )).fetchone()[0]
+
+    chat_count = conn.execute("""
+        SELECT COUNT(*)
+        FROM chats
+        WHERE user_id=?
+    """, (
+        user["id"],
+    )).fetchone()[0]
+
+    conn.close()
+
+    return {
+        "email": user["email"],
+        "plan": user["plan"],
+        "messages": count,
+        "chats": chat_count,
+        "created_at": user["created_at"],
+        "last_active": user["last_active"]
+    }
+
+
+# =========================================================
+# UPGRADE
+# =========================================================
+
+PLANS = {
+    "Free": {
+        "price": 0,
+        "description": "Basic access"
+    },
+    "Plus": {
+        "price": 499,
+        "description": "More AI usage"
+    },
+    "Pro": {
+        "price": 999,
+        "description": "Higher usage and priority"
+    }
+}
+
+
+@app.get("/api/plans")
+async def plans():
+    return PLANS
+
+
+@app.post("/api/upgrade")
+async def upgrade(
+    data: PlanRequest,
+    request: Request
+):
+
+    user = require_user(request)
+
+    plan = data.plan
+
+    if plan not in PLANS:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid plan"
+        )
+
+    if plan == "Free":
+
+        conn = db()
+
+        conn.execute(
+            "UPDATE users SET plan=? WHERE id=?",
+            ("Free", user["id"])
+        )
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "ok": True,
+            "plan": "Free"
+        }
+
+    # Payment gateway intentionally not faked.
+    return {
+        "ok": False,
+        "payment_required": True,
+        "plan": plan,
+        "price": PLANS[plan]["price"],
+        "message": (
+            "Payment gateway configuration is required "
+            "before activating a paid plan."
+        )
+    }
+
+
+# =========================================================
+# ADMIN DASHBOARD
+# =========================================================
+
+def is_owner(user):
+
+    if not user:
+        return False
+
+    if not OWNER_EMAIL:
+        return False
+
+    return user["email"].lower() == OWNER_EMAIL
+
+
+@app.get("/api/admin/users")
+async def admin_users(request: Request):
+
+    user = require_user(request)
+
+    if not is_owner(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Owner access required"
+        )
+
+    conn = db()
+
+    users = conn.execute("""
+        SELECT
+            id,
+            email,
+            plan,
+            created_at,
+            last_active
+        FROM users
+        ORDER BY id DESC
+    """).fetchall()
+
+    conn.close()
+
+    return [
+        dict(x)
+        for x in users
+    ]
+
+
+@app.get("/api/admin/activity")
+async def admin_activity(
+    request: Request
+):
+
+    user = require_user(request)
+
+    if not is_owner(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Owner access required"
+        )
+
+    conn = db()
+
+    rows = conn.execute("""
+        SELECT
+            usage.id,
+            users.email,
+            users.plan,
+            usage.question,
+            usage.created_at
+        FROM usage
+        JOIN users
+        ON users.id = usage.user_id
+        ORDER BY usage.id DESC
+        LIMIT 500
+    """).fetchall()
+
+    conn.close()
+
+    return [
+        dict(x)
+        for x in rows
+    ]
+
+
+@app.get("/api/admin/stats")
+async def admin_stats(
+    request: Request
+):
+
+    user = require_user(request)
+
+    if not is_owner(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Owner access required"
+        )
+
+    conn = db()
+
+    users = conn.execute(
+        "SELECT COUNT(*) FROM users"
+    ).fetchone()[0]
+
+    messages = conn.execute(
+        "SELECT COUNT(*) FROM usage"
+    ).fetchone()[0]
+
+    chats = conn.execute(
+        "SELECT COUNT(*) FROM chats"
+    ).fetchone()[0]
+
+    conn.close()
+
+    return {
+        "users": users,
+        "messages": messages,
+        "chats": chats
+    }
+
+
+# =========================================================
+# FRONTEND
+# =========================================================
+
+HTML = r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
 
 <meta charset="UTF-8">
 
-<meta name="viewport"
-      content="width=device-width,
-               initial-scale=1.0,
-               maximum-scale=1.0,
-               user-scalable=no">
+<meta
+ name="viewport"
+ content="width=device-width, initial-scale=1.0"
+>
 
 <title>Nirale AI</title>
 
-<!-- Markdown renderer -->
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
-<!-- HTML sanitizer -->
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.11.1/lib/common.min.js"></script>
+
+<link
+ rel="stylesheet"
+ href="https://cdn.jsdelivr.net/npm/highlight.js@11.11.1/styles/github-dark.min.css"
+>
 
 <style>
 
@@ -51,750 +1064,598 @@ body {
     padding: 0;
     width: 100%;
     height: 100%;
-    background: #131314;
-    color: #e8eaed;
-    font-family: Arial, sans-serif;
+    font-family:
+        Inter,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+    background: #ffffff;
+    color: #111111;
+}
+
+button,
+input,
+textarea {
+    font: inherit;
+}
+
+button {
+    cursor: pointer;
+}
+
+#app {
+    display: flex;
+    width: 100%;
+    height: 100vh;
     overflow: hidden;
 }
 
-.app {
-    width: 100%;
-    height: 100vh;
-    height: 100dvh;
+
+/* =====================================================
+   SIDEBAR
+   ===================================================== */
+
+#sidebar {
+    width: 270px;
+    background: #f7f7f8;
+    border-right: 1px solid #e5e5e5;
     display: flex;
     flex-direction: column;
+    transition: transform .25s ease;
+    z-index: 50;
+}
+
+.sidebar-top {
+    padding: 14px;
+}
+
+.brand {
+    font-size: 21px;
+    font-weight: 800;
+    margin-bottom: 14px;
+}
+
+.new-chat {
+    width: 100%;
+    border: 1px solid #ddd;
+    background: white;
+    border-radius: 10px;
+    padding: 11px;
+    text-align: left;
+    font-weight: 600;
+}
+
+.side-item {
+    padding: 11px 14px;
+    margin: 4px 10px;
+    border-radius: 9px;
+    cursor: pointer;
+}
+
+.side-item:hover {
+    background: #eaeaea;
+}
+
+.recents-title {
+    padding: 16px 14px 7px;
+    font-size: 12px;
+    color: #777;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+#recents {
+    overflow-y: auto;
+    flex: 1;
+}
+
+.recent-chat {
+    padding: 10px 14px;
+    margin: 2px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.recent-chat:hover {
+    background: #e7e7e7;
+}
+
+.account-area {
+    border-top: 1px solid #ddd;
+    padding: 12px;
+}
+
+.account-button {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    padding: 9px;
+    border-radius: 8px;
+}
+
+.account-button:hover {
+    background: #e8e8e8;
 }
 
 
-/* ================= HEADER ================= */
+/* =====================================================
+   MAIN
+   ===================================================== */
+
+#main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
 
 .header {
-    height: 56px;
-    min-height: 56px;
-
+    height: 60px;
+    border-bottom: 1px solid #eee;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-
-    padding: 0 10px;
-
-    background: #1e1e1f;
-
-    border-bottom: 1px solid #333;
-
-    z-index: 100;
+    padding: 0 16px;
+    gap: 12px;
 }
 
-.header-left {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.logo {
-    font-size: 17px;
-    font-weight: bold;
-    color: white;
-}
-
-.header-btn {
-    width: 40px;
-    height: 40px;
-
+.menu-btn {
     border: 0;
     background: transparent;
-
-    color: white;
-
-    border-radius: 50%;
-
-    font-size: 22px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    cursor: pointer;
+    font-size: 24px;
 }
 
-.header-btn:hover {
-    background: #303134;
+.header-title {
+    font-weight: 750;
+    flex: 1;
 }
 
-
-/* ================= SIDEBAR ================= */
-
-.sidebar {
-    position: fixed;
-
-    top: 0;
-    left: -285px;
-
-    width: 280px;
-    height: 100vh;
-    height: 100dvh;
-
-    background: #1e1e1f;
-
-    border-right: 1px solid #444;
-
-    z-index: 10000;
-
-    padding: 18px;
-
-    transition: left 0.25s ease;
-
-    box-shadow: 5px 0 25px rgba(0,0,0,0.4);
-}
-
-.sidebar.open {
-    left: 0;
-}
-
-.sidebar-title {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-
-    margin-bottom: 20px;
-}
-
-.sidebar-title h3 {
-    margin: 0;
-    color: white;
-}
-
-.close-sidebar {
+.upgrade-btn {
     border: 0;
-    background: transparent;
+    border-radius: 9px;
+    padding: 8px 13px;
+    background: #111;
     color: white;
-    font-size: 22px;
-    cursor: pointer;
-}
-
-.sidebar-btn {
-    width: 100%;
-
-    padding: 13px;
-
-    margin-bottom: 10px;
-
-    border: 0;
-
-    border-radius: 10px;
-
-    background: #303133;
-
-    color: white;
-
-    text-align: left;
-
-    font-size: 14px;
-
-    cursor: pointer;
-}
-
-.sidebar-btn:hover {
-    background: #3a3b3d;
-}
-
-.overlay {
-    display: none;
-
-    position: fixed;
-
-    inset: 0;
-
-    background: rgba(0,0,0,0.45);
-
-    z-index: 9999;
-}
-
-.overlay.open {
-    display: block;
 }
 
 
-/* ================= CHAT ================= */
+/* =====================================================
+   CHAT
+   ===================================================== */
 
 #chatbox {
     flex: 1;
-
     overflow-y: auto;
+    padding: 25px max(16px, calc((100% - 900px) / 2));
+}
 
-    padding: 16px;
+.welcome {
+    text-align: center;
+    padding-top: 16vh;
+}
 
+.welcome h1 {
+    font-size: 30px;
+}
+
+.welcome p {
+    color: #777;
+}
+
+.message {
     display: flex;
-
-    flex-direction: column;
-
-    gap: 12px;
-
-    scroll-behavior: smooth;
+    margin: 18px 0;
 }
 
-.msg {
-    max-width: 88%;
-
-    padding: 12px 15px;
-
-    border-radius: 14px;
-
-    font-size: 14px;
-
-    line-height: 1.55;
-
-    word-break: break-word;
+.message.user {
+    justify-content: flex-end;
 }
 
-.user {
-    align-self: flex-end;
-
-    background: #303134;
-
-    color: white;
-
-    border-bottom-right-radius: 5px;
+.message-inner {
+    max-width: 82%;
+    line-height: 1.6;
 }
 
-.bot {
-    align-self: flex-start;
-
-    background: #1e1e1f;
-
-    color: #e8eaed;
-
-    border: 1px solid #333;
-
-    border-bottom-left-radius: 5px;
+.message.user .message-inner {
+    background: #f0f0f0;
+    border-radius: 16px;
+    padding: 10px 14px;
 }
 
-
-/* ================= MARKDOWN ================= */
-
-.bot-content {
+.message.bot .message-inner {
     width: 100%;
 }
 
-.bot-content p {
-    margin: 0 0 12px 0;
-}
-
-.bot-content p:last-child {
-    margin-bottom: 0;
-}
-
-.bot-content h1,
-.bot-content h2,
-.bot-content h3,
-.bot-content h4 {
-    margin: 16px 0 9px;
-    color: white;
-    line-height: 1.3;
-}
-
-.bot-content h1 {
-    font-size: 22px;
-}
-
-.bot-content h2 {
-    font-size: 19px;
-}
-
-.bot-content h3 {
-    font-size: 17px;
-}
-
-.bot-content ul,
-.bot-content ol {
-    margin: 8px 0 12px 20px;
-    padding: 0;
-}
-
-.bot-content li {
-    margin: 5px 0;
-}
-
-.bot-content strong {
-    color: white;
-}
-
-.bot-content a {
-    color: #8ab4f8;
-}
-
-
-/* ================= CODE BLOCK ================= */
-
-.code-wrapper {
-    position: relative;
-
-    margin: 12px 0;
-
-    border: 1px solid #3c4043;
-
-    border-radius: 10px;
-
-    overflow: hidden;
-
-    background: #0d0e0f;
-}
-
-.code-header {
-    height: 36px;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: space-between;
-
-    padding: 0 10px;
-
-    background: #252628;
-
-    border-bottom: 1px solid #3c4043;
-
-    color: #aaa;
-
-    font-size: 12px;
-}
-
-.copy-code-btn {
-    border: 1px solid #555;
-
-    background: #303134;
-
-    color: #eee;
-
-    border-radius: 6px;
-
-    padding: 5px 9px;
-
-    font-size: 12px;
-
-    cursor: pointer;
-}
-
-.copy-code-btn:hover {
-    background: #414246;
-}
-
-.code-wrapper pre {
-    margin: 0;
-
-    padding: 14px;
-
-    overflow-x: auto;
-
-    white-space: pre;
-
-    font-family:
-        Consolas,
-        Monaco,
-        "Courier New",
-        monospace;
-
-    font-size: 13px;
-
-    line-height: 1.55;
-}
-
-.code-wrapper code {
-    color: #e8eaed;
-}
-
-.inline-code {
-    background: #303134;
-
-    border: 1px solid #444;
-
-    border-radius: 5px;
-
-    padding: 2px 5px;
-
-    font-family: monospace;
-
-    font-size: 13px;
-}
-
-
-/* ================= TABLE ================= */
-
-.bot-content table {
-    width: 100%;
-
-    border-collapse: collapse;
-
-    margin: 12px 0;
-
-    overflow: hidden;
-}
-
-.bot-content th,
-.bot-content td {
-    border: 1px solid #444;
-
-    padding: 8px;
-
-    text-align: left;
-}
-
-.bot-content th {
-    background: #303134;
-}
-
-
-/* ================= PHOTO ================= */
-
-.photo-msg {
-    padding: 7px !important;
-}
-
-.photo-preview {
-    display: block;
-
-    max-width: 280px;
+.message img {
+    max-width: 320px;
     max-height: 320px;
+    border-radius: 12px;
+    margin-top: 8px;
+}
 
-    width: auto;
-    height: auto;
+.thinking {
+    color: #777;
+    font-size: 14px;
+    animation: pulse 1.2s infinite;
+}
 
+@keyframes pulse {
+    50% {
+        opacity: .35;
+    }
+}
+
+
+/* =====================================================
+   MARKDOWN / CODE
+   ===================================================== */
+
+.message-inner pre {
+    position: relative;
+    background: #111;
+    color: #fff;
+    padding: 14px;
     border-radius: 10px;
-
-    object-fit: contain;
-
-    margin-bottom: 6px;
+    overflow-x: auto;
 }
 
-.photo-name {
+.code-wrap {
+    position: relative;
+    margin: 12px 0;
+}
+
+.code-actions {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    display: flex;
+    gap: 5px;
+}
+
+.code-actions button {
+    border: 0;
+    background: #333;
+    color: white;
+    border-radius: 6px;
+    padding: 5px 8px;
     font-size: 12px;
-    color: #bbb;
-    padding: 3px 5px;
+}
+
+.message-inner code {
+    font-family:
+        "SFMono-Regular",
+        Consolas,
+        monospace;
 }
 
 
-/* ================= FOOTER ================= */
+/* =====================================================
+   COMPOSER
+   ===================================================== */
 
-.footer {
-    width: 100%;
+.composer-area {
+    padding: 10px 16px 15px;
+    border-top: 1px solid #eee;
+}
 
-    min-height: 70px;
-
-    padding: 9px 10px;
-
-    background: #131314;
-
-    border-top: 1px solid #242424;
-
+.composer {
+    max-width: 900px;
+    margin: auto;
+    border: 1px solid #ccc;
+    border-radius: 18px;
     display: flex;
-
-    align-items: center;
-
-    gap: 7px;
-
-    flex-shrink: 0;
+    align-items: flex-end;
+    padding: 7px;
+    background: white;
+    box-shadow: 0 2px 12px rgba(0,0,0,.05);
 }
 
-
-/* PLUS */
-
-.plus-btn {
-    width: 45px;
-    height: 45px;
-
-    min-width: 45px;
-
-    border-radius: 50%;
-
-    border: 1px solid #444;
-
-    background: #2b2c2d;
-
-    color: white;
-
-    font-size: 26px;
-
-    cursor: pointer;
-
-    display: flex;
-
-    align-items: center;
-    justify-content: center;
-}
-
-.plus-btn:active {
-    transform: scale(0.95);
-}
-
-
-/* INPUT */
-
-#msg {
+.composer textarea {
     flex: 1;
-
-    min-width: 0;
-
-    height: 45px;
-
-    padding: 0 15px;
-
-    border-radius: 24px;
-
-    border: 1px solid #444;
-
-    background: #1e1e1f;
-
-    color: white;
-
-    outline: none;
-
-    font-size: 15px;
+    border: 0;
+    outline: 0;
+    resize: none;
+    min-height: 44px;
+    max-height: 150px;
+    padding: 11px;
 }
 
-#msg:focus {
-    border-color: #666;
+.icon-btn {
+    width: 40px;
+    height: 40px;
+    border: 0;
+    background: transparent;
+    border-radius: 10px;
 }
 
-#msg::placeholder {
-    color: #999;
-}
-
-
-/* MIC */
-
-.mic-btn {
-    width: 45px;
-    height: 45px;
-
-    min-width: 45px;
-
-    border-radius: 50%;
-
-    border: 1px solid #444;
-
-    background: #2b2c2d;
-
-    color: white;
-
-    font-size: 18px;
-
-    cursor: pointer;
-
-    display: flex;
-
-    align-items: center;
-    justify-content: center;
+.icon-btn:hover {
+    background: #eee;
 }
 
 .mic-btn.listening {
     background: #ff4444;
+    color: white;
 }
-
-
-/* SEND */
 
 .send-btn {
-    height: 45px;
-
-    min-width: 64px;
-
-    padding: 0 16px;
-
-    border: 0;
-
-    border-radius: 24px;
-
-    background: #ff4444;
-
+    background: #111;
     color: white;
-
-    font-size: 14px;
-
-    font-weight: bold;
-
-    cursor: pointer;
-}
-
-.send-btn:active {
-    transform: scale(0.96);
+    border-radius: 11px;
 }
 
 
-/* FILE */
+/* =====================================================
+   PLUS MENU
+   ===================================================== */
 
-#photoInput {
+.plus-menu {
+    position: absolute;
+    bottom: 75px;
+    left: 15px;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 13px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.15);
+    padding: 7px;
     display: none;
+    min-width: 190px;
+    z-index: 100;
+}
+
+.plus-menu button {
+    width: 100%;
+    border: 0;
+    background: white;
+    padding: 11px;
+    text-align: left;
+    border-radius: 8px;
+}
+
+.plus-menu button:hover {
+    background: #f0f0f0;
 }
 
 
-/* ================= MOBILE ================= */
+/* =====================================================
+   AUTH
+   ===================================================== */
 
-@media (max-width: 600px) {
+#auth-screen {
+    position: fixed;
+    inset: 0;
+    background: white;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
 
-    .header {
-        height: 54px;
-        min-height: 54px;
-        padding: 0 6px;
+.auth-card {
+    width: 100%;
+    max-width: 420px;
+    border: 1px solid #ddd;
+    border-radius: 18px;
+    padding: 30px;
+    box-shadow: 0 10px 50px rgba(0,0,0,.08);
+}
+
+.auth-logo {
+    font-size: 27px;
+    font-weight: 800;
+    margin-bottom: 8px;
+}
+
+.auth-sub {
+    color: #777;
+    margin-bottom: 24px;
+}
+
+.auth-card input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #ccc;
+    border-radius: 9px;
+    margin-bottom: 12px;
+    outline: none;
+}
+
+.auth-submit {
+    width: 100%;
+    border: 0;
+    padding: 12px;
+    border-radius: 10px;
+    background: #111;
+    color: white;
+    font-weight: 700;
+}
+
+.auth-switch {
+    margin-top: 18px;
+    text-align: center;
+    color: #666;
+}
+
+.auth-switch button {
+    border: 0;
+    background: transparent;
+    font-weight: 700;
+    text-decoration: underline;
+}
+
+.auth-error {
+    color: #d00;
+    margin-bottom: 10px;
+    min-height: 20px;
+}
+
+
+/* =====================================================
+   MODAL
+   ===================================================== */
+
+.modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.45);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    padding: 15px;
+}
+
+.modal-card {
+    background: white;
+    width: 100%;
+    max-width: 700px;
+    max-height: 90vh;
+    overflow-y: auto;
+    border-radius: 17px;
+    padding: 25px;
+}
+
+.close {
+    float: right;
+    border: 0;
+    background: transparent;
+    font-size: 22px;
+}
+
+.plan-grid {
+    display: grid;
+    grid-template-columns:
+        repeat(3, 1fr);
+    gap: 12px;
+}
+
+.plan {
+    border: 1px solid #ddd;
+    border-radius: 12px;
+    padding: 18px;
+}
+
+.plan button {
+    width: 100%;
+    padding: 9px;
+    border: 0;
+    background: #111;
+    color: white;
+    border-radius: 8px;
+}
+
+
+/* =====================================================
+   MOBILE
+   ===================================================== */
+
+@media(max-width:700px) {
+
+    #sidebar {
+        position: fixed;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        transform: translateX(-100%);
     }
 
-    .logo {
-        font-size: 16px;
+    #sidebar.open {
+        transform: translateX(0);
+    }
+
+    .message-inner {
+        max-width: 92%;
+    }
+
+    .header {
+        padding: 0 10px;
+    }
+
+    .upgrade-btn {
+        padding: 7px 9px;
+        font-size: 12px;
+    }
+
+    .plan-grid {
+        grid-template-columns: 1fr;
     }
 
     #chatbox {
-        padding: 10px;
-        gap: 10px;
+        padding: 18px 12px;
     }
 
-    .msg {
-        max-width: 94%;
-        font-size: 14px;
+    .composer-area {
+        padding: 7px;
     }
 
-    .footer {
-        min-height: 64px;
-
-        padding: 8px 6px;
-
-        padding-bottom:
-            calc(
-                8px +
-                env(safe-area-inset-bottom)
-            );
-    }
-
-    .plus-btn,
-    .mic-btn {
-        width: 42px;
-        height: 42px;
-        min-width: 42px;
-    }
-
-    #msg {
-        height: 42px;
-        font-size: 14px;
-        padding: 0 12px;
-    }
-
-    .send-btn {
-        height: 42px;
-        min-width: 58px;
-        padding: 0 11px;
-        font-size: 13px;
-    }
-
-    .photo-preview {
-        max-width: 240px;
-        max-height: 280px;
-    }
-
-    .sidebar {
-        width: 275px;
-        left: -280px;
-    }
-
-    .code-wrapper {
-        max-width: 100%;
-    }
-
-    .code-wrapper pre {
-        font-size: 12px;
-    }
 }
 
 </style>
 </head>
 
-
 <body>
 
-<div class="app">
 
+<!-- =====================================================
+     AUTH SCREEN
+     ===================================================== -->
 
-<!-- SIDEBAR -->
+<div id="auth-screen">
 
-<div id="sidebar" class="sidebar">
+    <div class="auth-card">
 
-    <div class="sidebar-title">
-
-        <h3>Menu</h3>
-
-        <button
-            class="close-sidebar"
-            onclick="closeSidebar()">
-            ×
-        </button>
-
-    </div>
-
-    <button
-        class="sidebar-btn"
-        onclick="newChat()">
-        ＋ New Chat
-    </button>
-
-    <button
-        class="sidebar-btn"
-        onclick="showUpgrade()">
-        ⭐ Upgrade
-    </button>
-
-    <button
-        class="sidebar-btn"
-        onclick="closeSidebar()">
-        Close Menu
-    </button>
-
-</div>
-
-
-<!-- OVERLAY -->
-
-<div
-    id="overlay"
-    class="overlay"
-    onclick="closeSidebar()">
-</div>
-
-
-<!-- HEADER -->
-
-<div class="header">
-
-    <div class="header-left">
-
-        <button
-            class="header-btn"
-            onclick="openSidebar()"
-            title="Menu">
-            ☰
-        </button>
-
-        <span class="logo">
+        <div class="auth-logo">
             ✨ Nirale AI
-        </span>
+        </div>
 
-    </div>
+        <div class="auth-sub">
+            Your AI assistant
+        </div>
 
-    <button
-        class="header-btn"
-        onclick="showUpgrade()"
-        title="Upgrade">
-        ⋮
-    </button>
+        <div
+            id="auth-error"
+            class="auth-error"
+        ></div>
 
-</div>
+        <input
+            id="auth-email"
+            type="email"
+            placeholder="Email"
+            autocomplete="email"
+        >
 
+        <input
+            id="auth-password"
+            type="password"
+            placeholder="Password"
+            autocomplete="current-password"
+        >
 
-<!-- CHAT -->
+        <button
+            class="auth-submit"
+            onclick="submitAuth()"
+        >
+            Login
+        </button>
 
-<div id="chatbox">
+        <div class="auth-switch">
 
-    <div class="msg bot">
+            <span id="auth-switch-text">
+                Don't have an account?
+            </span>
 
-        <div class="bot-content">
-            Hello! I am Nirale AI. How can I help you today?
+            <button
+                onclick="toggleAuthMode()"
+                id="auth-switch-btn"
+            >
+                Create account
+            </button>
+
         </div>
 
     </div>
@@ -802,391 +1663,1069 @@ body {
 </div>
 
 
-<!-- FOOTER -->
+<!-- =====================================================
+     APP
+     ===================================================== -->
 
-<div class="footer">
+<div id="app">
 
-    <button
-        class="plus-btn"
-        onclick="openPhotoPicker()"
-        title="Upload photo">
-        +
-    </button>
+    <aside id="sidebar">
 
-    <input
-        type="file"
-        id="photoInput"
-        accept="image/*"
-        onchange="handlePhoto(this)"
-    >
+        <div class="sidebar-top">
 
-    <input
-        type="text"
-        id="msg"
-        placeholder="Type a message..."
-        autocomplete="off"
-    >
+            <div class="brand">
+                ✨ Nirale AI
+            </div>
 
-    <button
-        id="micBtn"
-        class="mic-btn"
-        onclick="startSpeech()"
-        title="Voice input">
-        🎤
-    </button>
+            <button
+                class="new-chat"
+                onclick="newChat()"
+            >
+                ＋ New Chat
+            </button>
 
-    <button
-        class="send-btn"
-        onclick="send()">
-        Send
-    </button>
+        </div>
+
+        <div
+            class="side-item"
+            onclick="openUpgrade()"
+        >
+            ⭐ Upgrade
+        </div>
+
+        <div
+            class="side-item"
+            onclick="openAccount()"
+        >
+            👤 Account
+        </div>
+
+        <div
+            class="side-item"
+            onclick="openAdmin()"
+            id="admin-menu"
+            style="display:none"
+        >
+            📊 Admin Dashboard
+        </div>
+
+        <div class="recents-title">
+            Recents
+        </div>
+
+        <div id="recents"></div>
+
+        <div class="account-area">
+
+            <button
+                class="account-button"
+                onclick="openAccount()"
+                id="account-bottom"
+            >
+                👤 Account
+            </button>
+
+        </div>
+
+    </aside>
+
+
+    <main id="main">
+
+        <header class="header">
+
+            <button
+                class="menu-btn"
+                onclick="toggleSidebar()"
+            >
+                ☰
+            </button>
+
+            <div class="header-title">
+                Nirale AI
+            </div>
+
+            <button
+                class="upgrade-btn"
+                onclick="openUpgrade()"
+            >
+                ⭐ Upgrade
+            </button>
+
+        </header>
+
+
+        <section id="chatbox">
+
+            <div class="welcome">
+
+                <h1>
+                    How can I help you?
+                </h1>
+
+                <p>
+                    Ask anything to Nirale AI
+                </p>
+
+            </div>
+
+        </section>
+
+
+        <div class="composer-area">
+
+            <div
+                id="plus-menu"
+                class="plus-menu"
+            >
+
+                <button onclick="chooseFile()">
+                    📎 Attach files
+                </button>
+
+                <button onclick="chooseCamera()">
+                    📷 Camera
+                </button>
+
+                <button onclick="choosePhoto()">
+                    🖼️ Photos / Gallery
+                </button>
+
+                <button onclick="webSearch()">
+                    🌐 Web search
+                </button>
+
+                <button onclick="createImage()">
+                    🎨 Create image
+                </button>
+
+                <button onclick="openMap()">
+                    🗺️ Map
+                </button>
+
+            </div>
+
+
+            <div class="composer">
+
+                <button
+                    class="icon-btn"
+                    onclick="togglePlus()"
+                >
+                    ＋
+                </button>
+
+                <input
+                    type="file"
+                    id="file-input"
+                    hidden
+                    onchange="handleFile(event)"
+                >
+
+                <input
+                    type="file"
+                    id="camera-input"
+                    accept="image/*"
+                    capture="environment"
+                    hidden
+                    onchange="handleImage(event)"
+                >
+
+                <input
+                    type="file"
+                    id="photo-input"
+                    accept="image/*"
+                    hidden
+                    onchange="handleImage(event)"
+                >
+
+                <textarea
+                    id="message-input"
+                    placeholder="Message Nirale AI..."
+                    rows="1"
+                    onkeydown="handleEnter(event)"
+                ></textarea>
+
+                <button
+                    id="micBtn"
+                    class="icon-btn"
+                    onclick="startVoice()"
+                    title="Voice"
+                >
+                    🎤
+                </button>
+
+                <button
+                    class="icon-btn send-btn"
+                    onclick="sendMessage()"
+                    title="Send"
+                >
+                    ➤
+                </button>
+
+            </div>
+
+        </div>
+
+    </main>
 
 </div>
+
+
+<!-- =====================================================
+     ACCOUNT MODAL
+     ===================================================== -->
+
+<div
+    id="account-modal"
+    class="modal"
+>
+
+    <div class="modal-card">
+
+        <button
+            class="close"
+            onclick="closeModal('account-modal')"
+        >
+            ×
+        </button>
+
+        <h2>Account</h2>
+
+        <div id="account-content">
+            Loading...
+        </div>
+
+        <br>
+
+        <button
+            onclick="logout()"
+        >
+            Log out
+        </button>
+
+    </div>
+
+</div>
+
+
+<!-- =====================================================
+     UPGRADE MODAL
+     ===================================================== -->
+
+<div
+    id="upgrade-modal"
+    class="modal"
+>
+
+    <div class="modal-card">
+
+        <button
+            class="close"
+            onclick="closeModal('upgrade-modal')"
+        >
+            ×
+        </button>
+
+        <h2>⭐ Upgrade</h2>
+
+        <div class="plan-grid">
+
+            <div class="plan">
+
+                <h3>Free</h3>
+
+                <h2>₹0</h2>
+
+                <p>
+                    Basic access
+                </p>
+
+                <button
+                    onclick="selectPlan('Free')"
+                >
+                    Current / Free
+                </button>
+
+            </div>
+
+
+            <div class="plan">
+
+                <h3>Plus</h3>
+
+                <h2>₹499</h2>
+
+                <p>
+                    More AI usage
+                </p>
+
+                <button
+                    onclick="selectPlan('Plus')"
+                >
+                    Upgrade
+                </button>
+
+            </div>
+
+
+            <div class="plan">
+
+                <h3>Pro</h3>
+
+                <h2>₹999</h2>
+
+                <p>
+                    Higher usage
+                </p>
+
+                <button
+                    onclick="selectPlan('Pro')"
+                >
+                    Upgrade
+                </button>
+
+            </div>
+
+        </div>
+
+        <p id="payment-message"></p>
+
+    </div>
+
+</div>
+
+
+<!-- =====================================================
+     ADMIN MODAL
+     ===================================================== -->
+
+<div
+    id="admin-modal"
+    class="modal"
+>
+
+    <div class="modal-card">
+
+        <button
+            class="close"
+            onclick="closeModal('admin-modal')"
+        >
+            ×
+        </button>
+
+        <h2>📊 Admin Dashboard</h2>
+
+        <div id="admin-stats">
+            Loading...
+        </div>
+
+        <h3>Users</h3>
+
+        <div id="admin-users"></div>
+
+        <h3>Recent activity</h3>
+
+        <div id="admin-activity"></div>
+
+    </div>
 
 </div>
 
 
 <script>
 
-/* ================= MARKDOWN ================= */
+let authMode = "login";
 
-marked.setOptions({
-    breaks: true,
-    gfm: true
-});
+let currentChatId = null;
+
+let currentImage = null;
 
 
-function renderMarkdown(element, text) {
+/* =====================================================
+   AUTH
+   ===================================================== */
 
-    const rawHTML = marked.parse(text);
+async function checkAuth() {
 
-    const safeHTML = DOMPurify.sanitize(rawHTML);
+    try {
 
-    element.innerHTML = safeHTML;
+        const res =
+            await fetch("/api/me");
 
-    addCodeCopyButtons(element);
+        const data =
+            await res.json();
 
-    addInlineCodeClass(element);
+        if (data.logged_in) {
+
+            document
+                .getElementById("auth-screen")
+                .style.display = "none";
+
+            document
+                .getElementById("account-bottom")
+                .textContent =
+                "👤 " + data.email;
+
+            loadRecents();
+
+        } else {
+
+            document
+                .getElementById("auth-screen")
+                .style.display = "flex";
+
+        }
+
+    } catch(e) {
+
+        console.error(e);
+
+    }
+
 }
 
 
-function addInlineCodeClass(element) {
+function toggleAuthMode() {
 
-    const codes = element.querySelectorAll(
-        "code"
-    );
+    authMode =
+        authMode === "login"
+            ? "signup"
+            : "login";
 
-    codes.forEach(function(code) {
-
-        if (!code.parentElement ||
-            code.parentElement.tagName !== "PRE") {
-
-            code.classList.add(
-                "inline-code"
-            );
-        }
-
-    });
-}
-
-
-function addCodeCopyButtons(element) {
-
-    const blocks =
-        element.querySelectorAll("pre");
-
-    blocks.forEach(function(pre) {
-
-        const code =
-            pre.querySelector("code");
-
-        if (!code) {
-            return;
-        }
-
-        const wrapper =
-            document.createElement("div");
-
-        wrapper.className =
-            "code-wrapper";
-
-        const header =
-            document.createElement("div");
-
-        header.className =
-            "code-header";
-
-        const language =
-            document.createElement("span");
-
-        let languageName = "Code";
-
-        const className =
-            code.className || "";
-
-        const match =
-            className.match(
-                /language-([a-zA-Z0-9_-]+)/
-            );
-
-        if (match) {
-            languageName =
-                match[1];
-        }
-
-        language.textContent =
-            languageName;
-
-        const button =
-            document.createElement("button");
-
-        button.className =
-            "copy-code-btn";
-
-        button.textContent =
-            "Copy";
-
-        button.onclick =
-            async function() {
-
-                try {
-
-                    await navigator.clipboard.writeText(
-                        code.textContent
-                    );
-
-                    button.textContent =
-                        "Copied ✓";
-
-                    setTimeout(
-                        function() {
-
-                            button.textContent =
-                                "Copy";
-
-                        },
-                        1500
-                    );
-
-                } catch (error) {
-
-                    const textarea =
-                        document.createElement(
-                            "textarea"
-                        );
-
-                    textarea.value =
-                        code.textContent;
-
-                    document.body.appendChild(
-                        textarea
-                    );
-
-                    textarea.select();
-
-                    document.execCommand(
-                        "copy"
-                    );
-
-                    textarea.remove();
-
-                    button.textContent =
-                        "Copied ✓";
-
-                    setTimeout(
-                        function() {
-
-                            button.textContent =
-                                "Copy";
-
-                        },
-                        1500
-                    );
-                }
-
-            };
-
-        header.appendChild(language);
-
-        header.appendChild(button);
-
-        wrapper.appendChild(header);
-
-        pre.parentNode.insertBefore(
-            wrapper,
-            pre
+    const button =
+        document.getElementById(
+            "auth-switch-btn"
         );
 
-        wrapper.appendChild(pre);
+    const text =
+        document.getElementById(
+            "auth-switch-text"
+        );
 
-    });
+    const submit =
+        document.querySelector(
+            ".auth-submit"
+        );
+
+    if (authMode === "signup") {
+
+        submit.textContent =
+            "Create account";
+
+        text.textContent =
+            "Already have an account?";
+
+        button.textContent =
+            "Login";
+
+    } else {
+
+        submit.textContent =
+            "Login";
+
+        text.textContent =
+            "Don't have an account?";
+
+        button.textContent =
+            "Create account";
+
+    }
 
 }
 
 
-/* ================= SIDEBAR ================= */
+async function submitAuth() {
 
-function openSidebar() {
+    const email =
+        document
+            .getElementById("auth-email")
+            .value
+            .trim();
+
+    const password =
+        document
+            .getElementById("auth-password")
+            .value;
+
+    const error =
+        document
+            .getElementById("auth-error");
+
+    error.textContent = "";
+
+    if (!email || !password) {
+
+        error.textContent =
+            "Email and password required.";
+
+        return;
+
+    }
+
+    const endpoint =
+        authMode === "login"
+            ? "/api/login"
+            : "/api/signup";
+
+    try {
+
+        const res =
+            await fetch(
+                endpoint,
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+                    body: JSON.stringify({
+                        email,
+                        password
+                    })
+                }
+            );
+
+        const data =
+            await res.json();
+
+        if (!res.ok) {
+
+            error.textContent =
+                data.detail ||
+                "Authentication failed.";
+
+            return;
+
+        }
+
+        document
+            .getElementById("auth-screen")
+            .style.display = "none";
+
+        document
+            .getElementById("auth-password")
+            .value = "";
+
+        loadRecents();
+
+        checkOwner();
+
+    } catch(e) {
+
+        error.textContent =
+            "Connection error.";
+
+    }
+
+}
+
+
+/* =====================================================
+   SIDEBAR
+   ===================================================== */
+
+function toggleSidebar() {
 
     document
         .getElementById("sidebar")
-        .classList.add("open");
+        .classList
+        .toggle("open");
 
-    document
-        .getElementById("overlay")
-        .classList.add("open");
 }
 
 
-function closeSidebar() {
+function togglePlus() {
 
-    document
-        .getElementById("sidebar")
-        .classList.remove("open");
+    const menu =
+        document.getElementById(
+            "plus-menu"
+        );
 
-    document
-        .getElementById("overlay")
-        .classList.remove("open");
+    menu.style.display =
+        menu.style.display === "block"
+            ? "none"
+            : "block";
+
 }
 
+
+function closePlus() {
+
+    document
+        .getElementById("plus-menu")
+        .style.display = "none";
+
+}
+
+
+/* =====================================================
+   CHAT
+   ===================================================== */
 
 function newChat() {
+
+    currentChatId = null;
+
+    currentImage = null;
 
     document
         .getElementById("chatbox")
         .innerHTML = `
-            <div class="msg bot">
-                <div class="bot-content">
-                    Hello! I am Nirale AI. How can I help you today?
-                </div>
+            <div class="welcome">
+                <h1>How can I help you?</h1>
+                <p>Ask anything to Nirale AI</p>
             </div>
         `;
 
-    closeSidebar();
-}
-
-
-/* ================= UPGRADE ================= */
-
-function showUpgrade() {
-
-    alert(
-        "Nirale AI Upgrade - Coming Soon"
-    );
-
-    closeSidebar();
-}
-
-
-/* ================= PHOTO ================= */
-
-function openPhotoPicker() {
-
     document
-        .getElementById("photoInput")
-        .click();
+        .getElementById("message-input")
+        .value = "";
+
 }
 
 
-function handlePhoto(input) {
+function handleEnter(event) {
 
     if (
-        !input.files ||
-        input.files.length === 0
+        event.key === "Enter"
+        &&
+        !event.shiftKey
     ) {
-        return;
+
+        event.preventDefault();
+
+        sendMessage();
+
     }
 
-    const file =
-        input.files[0];
+}
 
-    if (
-        !file.type.startsWith("image/")
-    ) {
 
-        alert(
-            "Please select an image."
+function addMessage(
+    role,
+    content
+) {
+
+    const chat =
+        document.getElementById(
+            "chatbox"
         );
 
-        input.value = "";
+    const div =
+        document.createElement("div");
 
-        return;
+    div.className =
+        "message " + role;
+
+    const inner =
+        document.createElement("div");
+
+    inner.className =
+        "message-inner";
+
+    if (role === "bot") {
+
+        inner.innerHTML =
+            marked.parse(
+                content || ""
+            );
+
+        addCodeButtons(inner);
+
+        inner
+            .querySelectorAll("pre code")
+            .forEach(
+                block => {
+                    hljs.highlightElement(
+                        block
+                    );
+                }
+            );
+
+    } else {
+
+        inner.textContent =
+            content;
+
     }
 
-    const reader =
-        new FileReader();
+    div.appendChild(inner);
 
-    reader.onload =
-        function(event) {
+    chat.appendChild(div);
 
-            const chat =
-                document.getElementById(
-                    "chatbox"
-                );
+    chat.scrollTop =
+        chat.scrollHeight;
 
-            const photoDiv =
-                document.createElement(
-                    "div"
-                );
-
-            photoDiv.className =
-                "msg user photo-msg";
-
-            const image =
-                document.createElement(
-                    "img"
-                );
-
-            image.className =
-                "photo-preview";
-
-            image.src =
-                event.target.result;
-
-            image.alt =
-                "Uploaded photo";
-
-            const name =
-                document.createElement(
-                    "div"
-                );
-
-            name.className =
-                "photo-name";
-
-            name.textContent =
-                file.name;
-
-            photoDiv.appendChild(
-                image
-            );
-
-            photoDiv.appendChild(
-                name
-            );
-
-            chat.appendChild(
-                photoDiv
-            );
-
-            chat.scrollTop =
-                chat.scrollHeight;
-        };
-
-    reader.readAsDataURL(file);
-
-    input.value = "";
 }
 
 
-/* ================= MICROPHONE ================= */
+function showThinking() {
 
-let recognition = null;
+    const chat =
+        document.getElementById(
+            "chatbox"
+        );
 
-let isListening = false;
+    const div =
+        document.createElement("div");
+
+    div.id =
+        "thinking-message";
+
+    div.className =
+        "message bot";
+
+    div.innerHTML = `
+        <div class="message-inner thinking">
+            ಯೋಚಿಸುತ್ತಿದೆ...
+        </div>
+    `;
+
+    chat.appendChild(div);
+
+    chat.scrollTop =
+        chat.scrollHeight;
+
+}
 
 
-function startSpeech() {
+function removeThinking() {
+
+    const el =
+        document.getElementById(
+            "thinking-message"
+        );
+
+    if (el) {
+        el.remove();
+    }
+
+}
+
+
+async function sendMessage() {
+
+    const input =
+        document.getElementById(
+            "message-input"
+        );
+
+    const message =
+        input.value.trim();
+
+    if (!message) {
+        return;
+    }
+
+    closePlus();
+
+    addMessage(
+        "user",
+        message
+    );
+
+    input.value = "";
+
+    showThinking();
+
+    try {
+
+        const res =
+            await fetch(
+                "/api/chat",
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+                    body: JSON.stringify({
+                        message,
+                        chat_id:
+                            currentChatId,
+                        image_data:
+                            currentImage
+                    })
+                }
+            );
+
+        const data =
+            await res.json();
+
+        removeThinking();
+
+        if (res.status === 401) {
+
+            document
+                .getElementById("auth-screen")
+                .style.display = "flex";
+
+            return;
+
+        }
+
+        if (!res.ok) {
+
+            addMessage(
+                "bot",
+                "Error: " +
+                (
+                    data.detail ||
+                    "Request failed"
+                )
+            );
+
+            return;
+
+        }
+
+        currentChatId =
+            data.chat_id;
+
+        addMessage(
+            "bot",
+            data.reply
+        );
+
+        currentImage = null;
+
+        loadRecents();
+
+    } catch(e) {
+
+        removeThinking();
+
+        addMessage(
+            "bot",
+            "Connection error."
+        );
+
+    }
+
+}
+
+
+/* =====================================================
+   HISTORY
+   ===================================================== */
+
+async function loadRecents() {
+
+    const res =
+        await fetch("/api/chats");
+
+    if (!res.ok) {
+        return;
+    }
+
+    const chats =
+        await res.json();
+
+    const box =
+        document.getElementById(
+            "recents"
+        );
+
+    box.innerHTML = "";
+
+    chats.forEach(chat => {
+
+        const div =
+            document.createElement("div");
+
+        div.className =
+            "recent-chat";
+
+        div.textContent =
+            chat.title || "New Chat";
+
+        div.onclick =
+            () => openChat(chat.id);
+
+        box.appendChild(div);
+
+    });
+
+}
+
+
+async function openChat(id) {
+
+    const res =
+        await fetch(
+            "/api/chats/" + id
+        );
+
+    if (!res.ok) {
+        return;
+    }
+
+    const data =
+        await res.json();
+
+    currentChatId =
+        data.id;
+
+    const chatbox =
+        document.getElementById(
+            "chatbox"
+        );
+
+    chatbox.innerHTML = "";
+
+    data.messages.forEach(
+        msg => {
+
+            addMessage(
+                msg.role === "user"
+                    ? "user"
+                    : "bot",
+                msg.content
+            );
+
+        }
+    );
+
+    if (
+        window.innerWidth <= 700
+    ) {
+        toggleSidebar();
+    }
+
+}
+
+
+/* =====================================================
+   CODE BUTTONS
+   ===================================================== */
+
+function addCodeButtons(container) {
+
+    container
+        .querySelectorAll("pre")
+        .forEach(pre => {
+
+            const code =
+                pre.querySelector("code");
+
+            if (!code) {
+                return;
+            }
+
+            const wrap =
+                document.createElement(
+                    "div"
+                );
+
+            wrap.className =
+                "code-wrap";
+
+            pre.parentNode.insertBefore(
+                wrap,
+                pre
+            );
+
+            wrap.appendChild(pre);
+
+            const actions =
+                document.createElement(
+                    "div"
+                );
+
+            actions.className =
+                "code-actions";
+
+            const copy =
+                document.createElement(
+                    "button"
+                );
+
+            copy.textContent =
+                "Copy";
+
+            copy.onclick =
+                async () => {
+
+                    await navigator
+                        .clipboard
+                        .writeText(
+                            code.innerText
+                        );
+
+                    copy.textContent =
+                        "Copied";
+
+                    setTimeout(
+                        () => {
+                            copy.textContent =
+                                "Copy";
+                        },
+                        1200
+                    );
+
+                };
+
+            const download =
+                document.createElement(
+                    "button"
+                );
+
+            download.textContent =
+                "Download";
+
+            download.onclick =
+                () => {
+
+                    const blob =
+                        new Blob(
+                            [
+                                code.innerText
+                            ],
+                            {
+                                type:
+                                    "text/plain"
+                            }
+                        );
+
+                    const url =
+                        URL.createObjectURL(
+                            blob
+                        );
+
+                    const a =
+                        document.createElement(
+                            "a"
+                        );
+
+                    a.href = url;
+
+                    a.download =
+                        "nirale-code.txt";
+
+                    a.click();
+
+                    URL.revokeObjectURL(
+                        url
+                    );
+
+                };
+
+            actions.appendChild(copy);
+            actions.appendChild(download);
+
+            wrap.appendChild(actions);
+
+        });
+
+}
+
+
+/* =====================================================
+   VOICE
+   ===================================================== */
+
+function startVoice() {
 
     const SpeechRecognition =
         window.SpeechRecognition ||
@@ -1195,264 +2734,511 @@ function startSpeech() {
     if (!SpeechRecognition) {
 
         alert(
-            "Voice input is not supported by this browser. Please use Chrome."
+            "Voice input ಈ browserನಲ್ಲಿ support ಆಗುತ್ತಿಲ್ಲ."
         );
 
         return;
+
     }
 
-    if (
-        isListening &&
-        recognition
-    ) {
-
-        recognition.stop();
-
-        return;
-    }
-
-    recognition =
+    const recognition =
         new SpeechRecognition();
 
-    recognition.lang =
-        "kn-IN";
+    recognition.continuous = false;
 
-    recognition.continuous =
-        false;
+    recognition.interimResults = false;
 
-    recognition.interimResults =
-        false;
+    recognition.lang = "kn-IN";
 
-    recognition.maxAlternatives =
-        1;
-
-    const micBtn =
+    const mic =
         document.getElementById(
             "micBtn"
         );
 
-    recognition.onstart =
-        function() {
+    mic.classList.add(
+        "listening"
+    );
 
-            isListening = true;
-
-            micBtn.classList.add(
-                "listening"
-            );
-
-            micBtn.textContent =
-                "⏹";
-        };
+    recognition.start();
 
     recognition.onresult =
-        function(event) {
+        event => {
 
-            const transcript =
-                event.results[0][0]
+            const text =
+                event
+                    .results[0][0]
                     .transcript;
 
             document
-                .getElementById("msg")
-                .value =
-                transcript;
+                .getElementById(
+                    "message-input"
+                )
+                .value += text;
+
         };
 
     recognition.onerror =
-        function(event) {
+        () => {
 
-            console.log(
-                "Speech error:",
-                event.error
-            );
-
-            if (
-                event.error ===
-                "not-allowed"
-            ) {
-
-                alert(
-                    "Please allow microphone permission for Nirale AI in Chrome."
-                );
-            }
-        };
-
-    recognition.onend =
-        function() {
-
-            isListening = false;
-
-            micBtn.classList.remove(
+            mic.classList.remove(
                 "listening"
             );
 
-            micBtn.textContent =
-                "🎤";
         };
 
-    try {
+    recognition.onend =
+        () => {
 
-        recognition.start();
+            mic.classList.remove(
+                "listening"
+            );
 
-    } catch (error) {
+        };
 
-        console.log(error);
-
-    }
 }
 
 
-/* ================= SEND ================= */
+/* =====================================================
+   FILE / CAMERA / PHOTO
+   ===================================================== */
 
-async function send() {
+function chooseFile() {
 
-    const input =
-        document.getElementById(
-            "msg"
-        );
+    closePlus();
 
-    const chat =
-        document.getElementById(
-            "chatbox"
-        );
+    document
+        .getElementById("file-input")
+        .click();
 
-    const text =
-        input.value.trim();
+}
 
-    if (!text) {
+
+function chooseCamera() {
+
+    closePlus();
+
+    document
+        .getElementById("camera-input")
+        .click();
+
+}
+
+
+function choosePhoto() {
+
+    closePlus();
+
+    document
+        .getElementById("photo-input")
+        .click();
+
+}
+
+
+function handleFile(event) {
+
+    const file =
+        event.target.files[0];
+
+    if (!file) {
         return;
     }
 
+    document
+        .getElementById("message-input")
+        .value +=
+        "\n[Attached file: " +
+        file.name +
+        "]";
 
-    /* USER */
-
-    const userDiv =
-        document.createElement(
-            "div"
-        );
-
-    userDiv.className =
-        "msg user";
-
-    userDiv.textContent =
-        text;
-
-    chat.appendChild(
-        userDiv
-    );
-
-    input.value = "";
-
-
-    /* THINKING */
-
-    const botDiv =
-        document.createElement(
-            "div"
-        );
-
-    botDiv.className =
-        "msg bot";
-
-    const botContent =
-        document.createElement(
-            "div"
-        );
-
-    botContent.className =
-        "bot-content";
-
-    botContent.textContent =
-        "Thinking...";
-
-    botDiv.appendChild(
-        botContent
-    );
-
-    chat.appendChild(
-        botDiv
-    );
-
-    chat.scrollTop =
-        chat.scrollHeight;
-
-
-    try {
-
-        const response =
-            await fetch(
-                "/chat",
-                {
-                    method: "POST",
-
-                    headers: {
-                        "Content-Type":
-                            "application/json"
-                    },
-
-                    body:
-                        JSON.stringify({
-                            message: text
-                        })
-                }
-            );
-
-
-        const data =
-            await response.json();
-
-
-        if (response.ok) {
-
-            renderMarkdown(
-                botContent,
-                data.reply ||
-                "No response."
-            );
-
-        } else {
-
-            botContent.textContent =
-                "Error: " +
-                (
-                    data.reply ||
-                    "Server error"
-                );
-        }
-
-    } catch (error) {
-
-        botContent.textContent =
-            "Connection error.";
-
-        console.error(
-            error
-        );
-    }
-
-    chat.scrollTop =
-        chat.scrollHeight;
 }
 
 
-/* ================= ENTER ================= */
+function handleImage(event) {
 
-document
-    .getElementById("msg")
-    .addEventListener(
-        "keydown",
-        function(event) {
+    const file =
+        event.target.files[0];
 
-            if (
-                event.key === "Enter"
-            ) {
+    if (!file) {
+        return;
+    }
 
-                event.preventDefault();
+    const reader =
+        new FileReader();
 
-                send();
+    reader.onload =
+        () => {
+
+            currentImage =
+                reader.result;
+
+            const input =
+                document
+                    .getElementById(
+                        "message-input"
+                    );
+
+            input.value +=
+                "\n[Image attached]";
+
+        };
+
+    reader.readAsDataURL(
+        file
+    );
+
+}
+
+
+/* =====================================================
+   WEB / IMAGE / MAP
+   ===================================================== */
+
+function webSearch() {
+
+    closePlus();
+
+    const q =
+        prompt(
+            "What do you want to search?"
+        );
+
+    if (!q) {
+        return;
+    }
+
+    window.open(
+        "https://www.google.com/search?q="
+        +
+        encodeURIComponent(q),
+        "_blank"
+    );
+
+}
+
+
+function createImage() {
+
+    closePlus();
+
+    addMessage(
+        "bot",
+        "🎨 Image creation option selected. Connect an image-generation API to generate images directly from Nirale AI."
+    );
+
+}
+
+
+function openMap() {
+
+    closePlus();
+
+    const q =
+        prompt(
+            "Enter location:"
+        );
+
+    if (!q) {
+        return;
+    }
+
+    window.open(
+        "https://www.google.com/maps/search/"
+        +
+        encodeURIComponent(q),
+        "_blank"
+    );
+
+}
+
+
+/* =====================================================
+   ACCOUNT
+   ===================================================== */
+
+async function openAccount() {
+
+    const res =
+        await fetch(
+            "/api/account"
+        );
+
+    if (!res.ok) {
+        return;
+    }
+
+    const data =
+        await res.json();
+
+    document
+        .getElementById(
+            "account-content"
+        )
+        .innerHTML = `
+            <p><b>Email:</b> ${escapeHtml(data.email)}</p>
+            <p><b>Plan:</b> ${escapeHtml(data.plan)}</p>
+            <p><b>Messages:</b> ${data.messages}</p>
+            <p><b>Chats:</b> ${data.chats}</p>
+        `;
+
+    document
+        .getElementById(
+            "account-modal"
+        )
+        .style.display = "flex";
+
+}
+
+
+function openUpgrade() {
+
+    document
+        .getElementById(
+            "upgrade-modal"
+        )
+        .style.display = "flex";
+
+}
+
+
+async function selectPlan(plan) {
+
+    const res =
+        await fetch(
+            "/api/upgrade",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type":
+                        "application/json"
+                },
+                body: JSON.stringify({
+                    plan
+                })
             }
+        );
 
+    const data =
+        await res.json();
+
+    document
+        .getElementById(
+            "payment-message"
+        )
+        .textContent =
+        data.message ||
+        (
+            data.ok
+                ? "Plan updated."
+                : "Payment required."
+        );
+
+}
+
+
+async function logout() {
+
+    await fetch(
+        "/api/logout",
+        {
+            method: "POST"
         }
     );
+
+    location.reload();
+
+}
+
+
+/* =====================================================
+   ADMIN
+   ===================================================== */
+
+async function checkOwner() {
+
+    const res =
+        await fetch(
+            "/api/me"
+        );
+
+    if (!res.ok) {
+        return;
+    }
+
+    const user =
+        await res.json();
+
+    /*
+       OWNER_EMAIL is checked securely
+       on the server.
+       UI visibility alone is not security.
+    */
+
+    if (
+        user.logged_in &&
+        user.email
+    ) {
+
+        try {
+
+            const test =
+                await fetch(
+                    "/api/admin/stats"
+                );
+
+            if (test.ok) {
+
+                document
+                    .getElementById(
+                        "admin-menu"
+                    )
+                    .style.display =
+                    "block";
+
+            }
+
+        } catch(e) {}
+
+    }
+
+}
+
+
+async function openAdmin() {
+
+    const statsRes =
+        await fetch(
+            "/api/admin/stats"
+        );
+
+    if (!statsRes.ok) {
+
+        alert(
+            "Owner access required."
+        );
+
+        return;
+
+    }
+
+    const stats =
+        await statsRes.json();
+
+    document
+        .getElementById(
+            "admin-stats"
+        )
+        .innerHTML = `
+            <p>Users: <b>${stats.users}</b></p>
+            <p>Messages: <b>${stats.messages}</b></p>
+            <p>Chats: <b>${stats.chats}</b></p>
+        `;
+
+    const usersRes =
+        await fetch(
+            "/api/admin/users"
+        );
+
+    const users =
+        await usersRes.json();
+
+    document
+        .getElementById(
+            "admin-users"
+        )
+        .innerHTML =
+        users.map(
+            u => `
+                <div style="
+                    border-bottom:1px solid #ddd;
+                    padding:8px 0;
+                ">
+                    <b>${escapeHtml(u.email)}</b>
+                    <br>
+                    Plan: ${escapeHtml(u.plan)}
+                    <br>
+                    Created:
+                    ${escapeHtml(u.created_at)}
+                    <br>
+                    Last active:
+                    ${escapeHtml(
+                        u.last_active || "-"
+                    )}
+                </div>
+            `
+        ).join("");
+
+    const activityRes =
+        await fetch(
+            "/api/admin/activity"
+        );
+
+    const activity =
+        await activityRes.json();
+
+    document
+        .getElementById(
+            "admin-activity"
+        )
+        .innerHTML =
+        activity.map(
+            x => `
+                <div style="
+                    border-bottom:1px solid #ddd;
+                    padding:8px 0;
+                ">
+                    <b>${escapeHtml(x.email)}</b>
+                    <br>
+                    ${escapeHtml(x.question)}
+                    <br>
+                    <small>
+                        ${escapeHtml(x.created_at)}
+                    </small>
+                </div>
+            `
+        ).join("");
+
+    document
+        .getElementById(
+            "admin-modal"
+        )
+        .style.display = "flex";
+
+}
+
+
+function closeModal(id) {
+
+    document
+        .getElementById(id)
+        .style.display = "none";
+
+}
+
+
+/* =====================================================
+   SECURITY HELPER
+   ===================================================== */
+
+function escapeHtml(value) {
+
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+
+}
+
+
+/* =====================================================
+   START
+   ===================================================== */
+
+checkAuth();
+
+checkOwner();
 
 </script>
 
@@ -1461,112 +3247,16 @@ document
 """
 
 
+# =========================================================
+# ROOT
+# =========================================================
 
-@app.post("/chat")
-async def chat(request: ChatRequest):
-    try:
-        current_key = (
-            os.getenv("GEMINI_API_KEY")
-            or os.getenv("GOOGLE_API_KEY")
-        )
+@app.get(
+    "/",
+    response_class=HTMLResponse
+)
+async def home():
 
-        if not current_key:
-            return {"reply": "API Key is missing."}
-
-        message = request.message.strip()
-        lower_message = message.lower()
-
-        creator_questions = [
-            "who created you",
-            "who made you",
-            "who is your creator",
-            "who created nirale ai",
-            "who made nirale ai",
-            "who is the creator",
-            "creator of nirale ai",
-            "who developed you",
-            "who built you",
-            "your creator",
-            "ನಿನ್ನನ್ನು ಯಾರು ಮಾಡಿದರು",
-            "ನಿನ್ನನ್ನು ಯಾರು ಸೃಷ್ಟಿಸಿದರು",
-            "ನಿನ್ನ creator ಯಾರು",
-            "ನಿರಲೆ ai creator ಯಾರು",
-            "ನಿರಲೆ ai ಯಾರು create ಮಾಡಿದರು",
-            "ನಿರಲೆ ai ಅನ್ನು ಯಾರು ಮಾಡಿದರು",
-            "ನಿರಲೆ ai ಯನ್ನು ಯಾರು ಸೃಷ್ಟಿಸಿದರು",
-        ]
-
-        if any(question in lower_message for question in creator_questions):
-            return {"reply": "I was created by Nagesh Nirale."}
-
-        genai.configure(api_key=current_key)
-
-        model = genai.GenerativeModel("gemini-3.6-flash")
-
-        system_instruction = """
-You are Nirale AI.
-
-Answer users naturally, accurately and helpfully.
-
-IMPORTANT CREATOR RULE:
-Only mention Nagesh Nirale when the user specifically asks who created,
-made, developed, built, or is the creator of Nirale AI.
-
-If the user does not ask about your creator, do not mention Nagesh Nirale.
-Do not claim that Google or Gemini created Nirale AI.
-
-IMPORTANT FORMATTING RULE:
-Use clean Markdown formatting whenever useful.
-
-For programming questions:
-- Explain clearly.
-- Use proper headings when needed.
-- Put commands and code inside fenced code blocks.
-- Always specify the language when possible.
-- Keep code copy-paste friendly.
-- Do not put ordinary explanations inside code blocks.
-
-Answer in the user's language when possible.
-"""
-
-        full_prompt = system_instruction + "\n\nUser: " + message
-
-        response = model.generate_content(full_prompt)
-
-        reply = getattr(response, "text", None)
-
-        if not reply:
-            reply = "I could not generate a response."
-
-        return {"reply": reply}
-
-    except Exception as e:
-        error_message = str(e)
-        print("Gemini API Error:", error_message)
-
-        if "429" in error_message or "quota" in error_message.lower():
-            return {
-                "reply": "API quota limit reached. Please check your Gemini API quota."
-            }
-
-        if "404" in error_message or "not found" in error_message.lower():
-            return {
-                "reply": (
-                    "Gemini model is unavailable. Check GEMINI_MODEL or your "
-                    "Google AI API model access."
-                )
-            }
-
-        return {"reply": "API Error: " + error_message}
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    port = int(os.getenv("PORT", "10000"))
-
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=port,
+    return HTMLResponse(
+        HTML
     )
