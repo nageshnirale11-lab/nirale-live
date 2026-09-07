@@ -1,5023 +1,895 @@
 import os
 import re
-import base64
-import hashlib
-import secrets
 import sqlite3
-from datetime import datetime
+import secrets
+import hashlib
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
 
+APP_TITLE = "Nirale AI"
+DB_PATH = os.getenv("NIRALE_DB", "nirale.db")
+OWNER_EMAIL = os.getenv("OWNER_EMAIL", "").strip().lower()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
-# ============================================================
-# CONFIG
-# ============================================================
+app = FastAPI(title=APP_TITLE)
 
-APP_NAME = "Nirale AI"
-DB_FILE = "nirale.db"
+if genai and GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-API_KEY = (
-    os.getenv("GOOGLE_API_KEY")
-    or os.getenv("GEMINI_API_KEY")
-)
+CREATOR_REPLY = "ನನ್ನನ್ನು Nagesh Nirale ಅವರು ರಚಿಸಿದ್ದಾರೆ."
 
-MODEL_NAME = os.getenv(
-    "GEMINI_MODEL",
-    "gemini-3.6-flash"
-)
-
-OWNER_EMAIL = os.getenv(
-    "OWNER_EMAIL",
-    ""
-).strip().lower()
-
-if API_KEY:
-    genai.configure(api_key=API_KEY)
-
-app = FastAPI(title=APP_NAME)
-
-
-# ============================================================
-# DATABASE
-# ============================================================
+def now():
+    return datetime.now(timezone.utc).isoformat()
 
 def db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
-
+    c = sqlite3.connect(DB_PATH)
+    c.row_factory = sqlite3.Row
+    return c
 
 def init_db():
-
-    conn = db()
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            salt TEXT NOT NULL,
-            plan TEXT DEFAULT 'Free',
-            created_at TEXT NOT NULL,
-            last_active TEXT
-        )
+    c = db()
+    c.executescript("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        salt TEXT NOT NULL,
+        plan TEXT DEFAULT 'Free',
+        created_at TEXT NOT NULL,
+        last_active TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS chats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        email TEXT,
+        question TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        plan TEXT DEFAULT 'Guest'
+    );
     """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            token TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS chats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS usage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            chat_id INTEGER,
-            message TEXT,
-            created_at TEXT NOT NULL
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
+    c.commit()
+    c.close()
 
 init_db()
 
-
-# ============================================================
-# PASSWORD
-# ============================================================
-
-def hash_password(password, salt=None):
-
-    if salt is None:
-        salt = secrets.token_hex(16)
-
-    hashed = hashlib.scrypt(
-        password.encode(),
-        salt=bytes.fromhex(salt),
-        n=16384,
-        r=8,
-        p=1,
-        dklen=64
-    )
-
-    return hashed.hex(), salt
-
-
-def verify_password(
-    password,
-    password_hash,
-    salt
-):
-
-    new_hash, _ = hash_password(
-        password,
-        salt
-    )
-
-    return secrets.compare_digest(
-        new_hash,
-        password_hash
-    )
-
-
-# ============================================================
-# SESSION
-# ============================================================
-
-def current_user(request: Request):
-
-    token = request.cookies.get(
-        "nirale_session"
-    )
-
-    if not token:
-        return None
-
-    conn = db()
-
-    user = conn.execute("""
-        SELECT users.*
-        FROM users
-        JOIN sessions
-        ON sessions.user_id = users.id
-        WHERE sessions.token = ?
-    """, (token,)).fetchone()
-
-    conn.close()
-
-    return user
-
-
-def update_last_active(user_id):
-
-    conn = db()
-
-    conn.execute("""
-        UPDATE users
-        SET last_active = ?
-        WHERE id = ?
-    """, (
-        datetime.now().isoformat(),
-        user_id
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-# ============================================================
-# MODELS
-# ============================================================
-
-class AuthData(BaseModel):
+class AuthBody(BaseModel):
     email: str
     password: str
 
-
-class ChatData(BaseModel):
-    message: str = ""
+class ChatBody(BaseModel):
+    message: str
     chat_id: Optional[int] = None
-    image_data: Optional[str] = None
 
+def hash_password(password, salt=None):
+    salt = salt or secrets.token_hex(16)
+    h = hashlib.scrypt(
+        password.encode(),
+        salt=salt.encode(),
+        n=16384,
+        r=8,
+        p=1
+    ).hex()
+    return h, salt
 
-class UpgradeData(BaseModel):
-    plan: str
+def verify_password(password, stored, salt):
+    h, _ = hash_password(password, salt)
+    return secrets.compare_digest(h, stored)
 
+def get_user(request: Request):
+    token = request.cookies.get("nirale_session")
+    if not token:
+        return None
+    c = db()
+    row = c.execute("""
+        SELECT users.* FROM users
+        JOIN sessions ON sessions.user_id = users.id
+        WHERE sessions.token=?
+    """, (token,)).fetchone()
+    if row:
+        c.execute("UPDATE users SET last_active=? WHERE id=?", (now(), row["id"]))
+        c.commit()
+    c.close()
+    return row
 
-# ============================================================
-# CREATOR
-# ============================================================
-
-def creator_question(text):
-
+def is_creator_question(text):
     t = text.lower().strip()
-
-    words = [
-        "who created you",
-        "who made you",
-        "who is your creator",
-        "who developed you",
-        "who built you",
-        "who owns you",
-        "creator yaaru",
-        "creator yaru",
-        "ninna creator yaaru",
-        "ninna creator yaru",
-        "ninnannu yaaru madidaru",
-        "ninnannu yaaru madidru",
-        "ninnannu yaaru rachisidaru",
-        "ನಿನ್ನ creator ಯಾರು",
-        "ನಿನ್ನನ್ನು ಯಾರು ರಚಿಸಿದ್ದಾರೆ",
-        "ನಿನ್ನನ್ನು ಯಾರು ಮಾಡಿದರು",
-        "ನಿನ್ನನ್ನು ಯಾರು ಅಭಿವೃದ್ಧಿಪಡಿಸಿದರು"
+    patterns = [
+        "who created you", "who made you", "who built you",
+        "who developed you", "who is your creator",
+        "who's your creator", "who created nirale",
+        "who made nirale", "who developed nirale",
+        "nirale ai created", "nirale ai creator",
+        "nagesh nirale", "nagesh created you",
+        "nimmannu yaru create", "nimmannu yaaru create",
+        "ninnannu yaru create", "ninnannu yaaru create",
+        "ninnannu yaru madidru", "ninnannu yaaru madidru",
+        "ninnannu yaaru rachisidaru", "nimmannu yaaru rachisidaru",
+        "yaru create madidru", "yaru create madidaru",
+        "yaru madidru", "yaru madidaru",
+        "ನಿನ್ನನ್ನು ಯಾರು", "ನಿಮ್ಮನ್ನು ಯಾರು",
+        "ಯಾರು ರಚಿಸಿದ್ದಾರೆ", "ಯಾರು ಸೃಷ್ಟಿಸಿದ್ದಾರೆ",
+        "ಯಾರು create", "ಯಾರು ಮಾಡಿದರು"
     ]
+    return any(p in t for p in patterns)
 
-    return any(
-        word in t
-        for word in words
-    )
-
-
-CREATOR_REPLY = (
-    "ನನ್ನನ್ನು Nagesh Nirale ಅವರು ರಚಿಸಿದ್ದಾರೆ."
-)
-
-
-# ============================================================
-# LANGUAGE
-# ============================================================
-
-def thinking_text(message):
-
-    if re.search(
-        r"[\u0C80-\u0CFF]",
-        message
-    ):
-        return "ಯೋಚಿಸುತ್ತಿದೆ..."
-
-    if re.search(
-        r"[\u0900-\u097F]",
-        message
-    ):
-        return "सोच रहा हूँ..."
-
-    if re.search(
-        r"[\u0C00-\u0C7F]",
-        message
-    ):
-        return "ఆలోచిస్తోంది..."
-
-    if re.search(
-        r"[\u0B80-\u0BFF]",
-        message
-    ):
-        return "யோசிக்கிறது..."
-
-    if re.search(
-        r"[\u0D00-\u0D7F]",
-        message
-    ):
-        return "ചിന്തിക്കുന്നു..."
-
-    if re.search(
-        r"[\u0C00-\u0C7F]",
-        message
-    ):
-        return "ಆಲೋಚಿಸುತ್ತಿದೆ..."
-
-    return "Thinking..."
-
-
-# ============================================================
-# GEMINI
-# ============================================================
-
-SYSTEM_PROMPT = """
-You are Nirale AI.
-
-You are a helpful multilingual AI assistant.
-
-IMPORTANT LANGUAGE RULE:
-
-Reply in the SAME LANGUAGE that the user uses.
-
-If the user writes Kannada, reply in Kannada.
-
-If the user writes English, reply in English.
-
-If the user writes Hindi, reply in Hindi.
-
-If the user writes Telugu, reply in Telugu.
-
-If the user writes Tamil, reply in Tamil.
-
-If the user writes Malayalam, reply in Malayalam.
-
-If the user mixes languages, naturally follow the language
-used by the user.
-
-Do not unnecessarily change the user's language.
-
-You can answer questions about programming, cybersecurity,
-Linux, technology, education, general knowledge and other
-normal topics.
-
-Use Markdown when useful.
-
-Put programming code inside fenced code blocks.
-
-Never reveal passwords, API keys, session tokens or secrets.
-
-Never claim that a real-world action was completed when it
-was not completed.
+SYSTEM_PROMPT = """You are Nirale AI, a helpful multilingual AI assistant created by Nagesh Nirale.
+Answer the user's question accurately and naturally. Reply in the same language the user uses whenever possible.
+Support Kannada, English, Hindi, Telugu, Tamil, Malayalam, Marathi, Bengali, Gujarati, Punjabi, Urdu and other languages.
+Do not claim that Nirale AI was created by Google or by Nirale AI itself. If asked who created you, the application handles that answer separately.
+Use Markdown when useful. For programming code, use fenced code blocks with the correct language.
+Do not expose passwords, API keys, session tokens or private user data.
 """
 
-
-def generate_reply(
-    message,
-    image_data=None
-):
-
-    if creator_question(message):
-        return CREATOR_REPLY
-
-    if not API_KEY:
-        raise RuntimeError(
-            "GOOGLE_API_KEY or GEMINI_API_KEY is missing."
-        )
-
-    model = genai.GenerativeModel(
-        MODEL_NAME,
-        system_instruction=SYSTEM_PROMPT
-    )
-
-    contents = []
-
-    if message:
-        contents.append(message)
-
-    if image_data:
-
-        try:
-
-            if "," in image_data:
-                image_data = image_data.split(
-                    ",",
-                    1
-                )[1]
-
-            image_bytes = base64.b64decode(
-                image_data
-            )
-
-            contents.append({
-                "mime_type": "image/jpeg",
-                "data": image_bytes
-            })
-
-        except Exception:
-            pass
-
-    response = model.generate_content(
-        contents
-    )
-
-    text = getattr(
-        response,
-        "text",
-        None
-    )
-
-    if not text:
-        return "Sorry, answer generate ಆಗಲಿಲ್ಲ."
-
-    return text
-
-
-# ============================================================
-# GUEST COUNTER
-# ============================================================
-
-def guest_count(request):
-
-    value = request.cookies.get(
-        "nirale_guest_count",
-        "0"
-    )
+def ask_gemini(message, history=None):
+    if not genai or not GEMINI_API_KEY:
+        return "Gemini API is not configured. Please set GEMINI_API_KEY in the server environment."
 
     try:
-        return int(value)
-    except Exception:
-        return 0
-
-
-# ============================================================
-# SIGNUP
-# ============================================================
+        model = genai.GenerativeModel(
+            GEMINI_MODEL,
+            system_instruction=SYSTEM_PROMPT
+        )
+        contents = []
+        for item in (history or [])[-12:]:
+            contents.append({
+                "role": "user" if item["role"] == "user" else "model",
+                "parts": [item["content"]]
+            })
+        contents.append({"role": "user", "parts": [message]})
+        response = model.generate_content(contents)
+        text = getattr(response, "text", None)
+        return text.strip() if text else "Sorry, I could not generate a response."
+    except Exception as e:
+        return f"Gemini error: {str(e)}"
 
 @app.post("/api/signup")
-async def signup(data: AuthData):
-
-    email = data.email.strip().lower()
-    password = data.password
-
-    if not re.match(
-        r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
-        email
-    ):
-        raise HTTPException(
-            400,
-            "Valid email enter madi."
-        )
-
+def signup(body: AuthBody):
+    email = body.email.strip().lower()
+    password = body.password
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return {"ok": False, "error": "Enter a valid email address."}
     if len(password) < 6:
-        raise HTTPException(
-            400,
-            "Password minimum 6 characters ಇರಬೇಕು."
-        )
+        return {"ok": False, "error": "Password must be at least 6 characters."}
 
-    password_hash, salt = hash_password(
-        password
-    )
-
-    conn = db()
-
+    ph, salt = hash_password(password)
+    c = db()
     try:
-
-        cur = conn.execute("""
-            INSERT INTO users
-            (
-                email,
-                password_hash,
-                salt,
-                plan,
-                created_at,
-                last_active
-            )
-            VALUES (?, ?, ?, 'Free', ?, ?)
-        """, (
-            email,
-            password_hash,
-            salt,
-            datetime.now().isoformat(),
-            datetime.now().isoformat()
-        ))
-
-        user_id = cur.lastrowid
-
-        token = secrets.token_urlsafe(48)
-
-        conn.execute("""
-            INSERT INTO sessions
-            (
-                token,
-                user_id,
-                created_at
-            )
-            VALUES (?, ?, ?)
-        """, (
-            token,
-            user_id,
-            datetime.now().isoformat()
-        ))
-
-        conn.commit()
-
+        cur = c.execute("""
+            INSERT INTO users(email,password_hash,salt,plan,created_at,last_active)
+            VALUES(?,?,?,?,?,?)
+        """, (email, ph, salt, "Free", now(), now()))
+        uid = cur.lastrowid
+        token = secrets.token_urlsafe(32)
+        c.execute("INSERT INTO sessions VALUES(?,?,?)", (token, uid, now()))
+        c.commit()
     except sqlite3.IntegrityError:
+        c.close()
+        return {"ok": False, "error": "An account with this email already exists."}
+    c.close()
 
-        conn.close()
-
-        raise HTTPException(
-            400,
-            "ಈ email ಈಗಾಗಲೇ registered ಇದೆ."
-        )
-
-    conn.close()
-
-    response = JSONResponse({
-        "ok": True,
-        "email": email
-    })
-
-    response.set_cookie(
-        "nirale_session",
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=2592000
-    )
-
-    response.delete_cookie(
-        "nirale_guest_count"
-    )
-
-    return response
-
-
-# ============================================================
-# LOGIN
-# ============================================================
+    from fastapi.responses import JSONResponse
+    r = JSONResponse({"ok": True})
+    r.set_cookie("nirale_session", token, httponly=True, samesite="lax", secure=False, max_age=60*60*24*30)
+    r.delete_cookie("nirale_guest_count")
+    return r
 
 @app.post("/api/login")
-async def login(data: AuthData):
+def login(body: AuthBody):
+    email = body.email.strip().lower()
+    c = db()
+    user = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+    if not user or not verify_password(body.password, user["password_hash"], user["salt"]):
+        c.close()
+        return {"ok": False, "error": "Invalid email or password."}
+    token = secrets.token_urlsafe(32)
+    c.execute("INSERT INTO sessions VALUES(?,?,?)", (token, user["id"], now()))
+    c.execute("UPDATE users SET last_active=? WHERE id=?", (now(), user["id"]))
+    c.commit()
+    c.close()
 
-    email = data.email.strip().lower()
-
-    conn = db()
-
-    user = conn.execute("""
-        SELECT *
-        FROM users
-        WHERE email = ?
-    """, (email,)).fetchone()
-
-    conn.close()
-
-    if not user:
-        raise HTTPException(
-            401,
-            "Email ಅಥವಾ password ತಪ್ಪಾಗಿದೆ."
-        )
-
-    if not verify_password(
-        data.password,
-        user["password_hash"],
-        user["salt"]
-    ):
-        raise HTTPException(
-            401,
-            "Email ಅಥವಾ password ತಪ್ಪಾಗಿದೆ."
-        )
-
-    token = secrets.token_urlsafe(48)
-
-    conn = db()
-
-    conn.execute("""
-        INSERT INTO sessions
-        (
-            token,
-            user_id,
-            created_at
-        )
-        VALUES (?, ?, ?)
-    """, (
-        token,
-        user["id"],
-        datetime.now().isoformat()
-    ))
-
-    conn.execute("""
-        UPDATE users
-        SET last_active = ?
-        WHERE id = ?
-    """, (
-        datetime.now().isoformat(),
-        user["id"]
-    ))
-
-    conn.commit()
-    conn.close()
-
-    response = JSONResponse({
-        "ok": True,
-        "email": email,
-        "plan": user["plan"]
-    })
-
-    response.set_cookie(
-        "nirale_session",
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=2592000
-    )
-
-    response.delete_cookie(
-        "nirale_guest_count"
-    )
-
-    return response
-
-
-# ============================================================
-# LOGOUT
-# ============================================================
+    from fastapi.responses import JSONResponse
+    r = JSONResponse({"ok": True})
+    r.set_cookie("nirale_session", token, httponly=True, samesite="lax", secure=False, max_age=60*60*24*30)
+    r.delete_cookie("nirale_guest_count")
+    return r
 
 @app.post("/api/logout")
-async def logout(request: Request):
-
-    token = request.cookies.get(
-        "nirale_session"
-    )
-
+def logout(request: Request):
+    token = request.cookies.get("nirale_session")
+    c = db()
     if token:
-
-        conn = db()
-
-        conn.execute(
-            "DELETE FROM sessions WHERE token=?",
-            (token,)
-        )
-
-        conn.commit()
-        conn.close()
-
-    response = JSONResponse({
-        "ok": True
-    })
-
-    response.delete_cookie(
-        "nirale_session"
-    )
-
-    return response
-
-
-# ============================================================
-# ME
-# ============================================================
+        c.execute("DELETE FROM sessions WHERE token=?", (token,))
+    c.commit()
+    c.close()
+    from fastapi.responses import JSONResponse
+    r = JSONResponse({"ok": True})
+    r.delete_cookie("nirale_session")
+    return r
 
 @app.get("/api/me")
-async def me(request: Request):
-
-    user = current_user(request)
-
-    if not user:
-        return {
-            "logged_in": False
-        }
-
-    update_last_active(
-        user["id"]
-    )
-
+def me(request: Request):
+    u = get_user(request)
+    if not u:
+        return {"logged_in": False}
     return {
         "logged_in": True,
-        "id": user["id"],
-        "email": user["email"],
-        "plan": user["plan"],
-        "created_at": user["created_at"],
-        "last_active": user["last_active"]
+        "email": u["email"],
+        "plan": u["plan"],
+        "created_at": u["created_at"],
+        "last_active": u["last_active"]
     }
-
-
-# ============================================================
-# CHAT
-# ============================================================
-
-@app.post("/api/chat")
-async def chat(
-    request: Request,
-    data: ChatData
-):
-
-    message = data.message.strip()
-
-    if not message and not data.image_data:
-        raise HTTPException(
-            400,
-            "Message empty ide."
-        )
-
-    user = current_user(request)
-
-
-    # ========================================================
-    # GUEST
-    # ========================================================
-
-    if not user:
-
-        count = guest_count(request)
-
-        if count >= 4:
-
-            raise HTTPException(
-                401,
-                "LOGIN_REQUIRED"
-            )
-
-        try:
-
-            reply = generate_reply(
-                message,
-                data.image_data
-            )
-
-        except Exception as e:
-
-            raise HTTPException(
-                500,
-                str(e)
-            )
-
-        new_count = count + 1
-
-        response = JSONResponse({
-            "ok": True,
-            "guest": True,
-            "guest_count": new_count,
-            "remaining": max(
-                0,
-                4 - new_count
-            ),
-            "reply": reply
-        })
-
-        response.set_cookie(
-            "nirale_guest_count",
-            str(new_count),
-            httponly=True,
-            samesite="lax",
-            secure=False,
-            max_age=86400
-        )
-
-        return response
-
-
-    # ========================================================
-    # LOGGED IN
-    # ========================================================
-
-    update_last_active(
-        user["id"]
-    )
-
-    conn = db()
-
-    chat_id = data.chat_id
-
-
-    if chat_id:
-
-        found = conn.execute("""
-            SELECT *
-            FROM chats
-            WHERE id=?
-            AND user_id=?
-        """, (
-            chat_id,
-            user["id"]
-        )).fetchone()
-
-        if not found:
-
-            conn.close()
-
-            raise HTTPException(
-                404,
-                "Chat not found."
-            )
-
-    else:
-
-        title = (
-            message[:60]
-            if message
-            else "Image Chat"
-        )
-
-        cur = conn.execute("""
-            INSERT INTO chats
-            (
-                user_id,
-                title,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?)
-        """, (
-            user["id"],
-            title,
-            datetime.now().isoformat(),
-            datetime.now().isoformat()
-        ))
-
-        chat_id = cur.lastrowid
-
-
-    conn.execute("""
-        INSERT INTO messages
-        (
-            chat_id,
-            role,
-            content,
-            created_at
-        )
-        VALUES (?, 'user', ?, ?)
-    """, (
-        chat_id,
-        message or "[Image]",
-        datetime.now().isoformat()
-    ))
-
-
-    conn.execute("""
-        INSERT INTO usage
-        (
-            user_id,
-            chat_id,
-            message,
-            created_at
-        )
-        VALUES (?, ?, ?, ?)
-    """, (
-        user["id"],
-        chat_id,
-        message or "[Image]",
-        datetime.now().isoformat()
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-    try:
-
-        reply = generate_reply(
-            message,
-            data.image_data
-        )
-
-    except Exception as e:
-
-        raise HTTPException(
-            500,
-            str(e)
-        )
-
-
-    conn = db()
-
-    conn.execute("""
-        INSERT INTO messages
-        (
-            chat_id,
-            role,
-            content,
-            created_at
-        )
-        VALUES (?, 'assistant', ?, ?)
-    """, (
-        chat_id,
-        reply,
-        datetime.now().isoformat()
-    ))
-
-
-    conn.execute("""
-        UPDATE chats
-        SET updated_at=?
-        WHERE id=?
-    """, (
-        datetime.now().isoformat(),
-        chat_id
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-    return {
-        "ok": True,
-        "guest": False,
-        "chat_id": chat_id,
-        "reply": reply
-    }
-
-
-# ============================================================
-# CHAT HISTORY
-# ============================================================
 
 @app.get("/api/chats")
-async def chats(request: Request):
-
-    user = current_user(request)
-
-    if not user:
-
-        raise HTTPException(
-            401,
-            "Login madi."
-        )
-
-    conn = db()
-
-    rows = conn.execute("""
-        SELECT *
-        FROM chats
-        WHERE user_id=?
-        ORDER BY updated_at DESC
-    """, (
-        user["id"],
-    )).fetchall()
-
-    conn.close()
-
-    return {
-        "chats": [
-            dict(row)
-            for row in rows
-        ]
-    }
-
+def chats(request: Request):
+    u = get_user(request)
+    if not u:
+        return {"ok": True, "chats": []}
+    c = db()
+    rows = c.execute("""
+        SELECT id,title,created_at,updated_at
+        FROM chats WHERE user_id=? ORDER BY updated_at DESC
+    """, (u["id"],)).fetchall()
+    c.close()
+    return {"ok": True, "chats": [dict(x) for x in rows]}
 
 @app.get("/api/chats/{chat_id}")
-async def chat_history(
-    chat_id: int,
-    request: Request
-):
-
-    user = current_user(request)
-
-    if not user:
-
-        raise HTTPException(
-            401,
-            "Login madi."
-        )
-
-    conn = db()
-
-    chat_row = conn.execute("""
-        SELECT *
-        FROM chats
-        WHERE id=?
-        AND user_id=?
-    """, (
-        chat_id,
-        user["id"]
-    )).fetchone()
-
-    if not chat_row:
-
-        conn.close()
-
-        raise HTTPException(
-            404,
-            "Chat not found."
-        )
-
-    messages = conn.execute("""
-        SELECT *
-        FROM messages
-        WHERE chat_id=?
-        ORDER BY id ASC
-    """, (
-        chat_id,
-    )).fetchall()
-
-    conn.close()
-
-    return {
-        "chat": dict(chat_row),
-        "messages": [
-            dict(x)
-            for x in messages
-        ]
-    }
-
+def get_chat(chat_id: int, request: Request):
+    u = get_user(request)
+    if not u:
+        return {"ok": False, "error": "Login required."}
+    c = db()
+    chat = c.execute(
+        "SELECT * FROM chats WHERE id=? AND user_id=?", (chat_id, u["id"])
+    ).fetchone()
+    msgs = c.execute(
+        "SELECT role,content,created_at FROM messages WHERE chat_id=? ORDER BY id",
+        (chat_id,)
+    ).fetchall()
+    c.close()
+    if not chat:
+        return {"ok": False, "error": "Chat not found."}
+    return {"ok": True, "chat": dict(chat), "messages": [dict(x) for x in msgs]}
 
 @app.delete("/api/chats/{chat_id}")
-async def remove_chat(
-    chat_id: int,
-    request: Request
-):
+def delete_chat(chat_id: int, request: Request):
+    u = get_user(request)
+    if not u:
+        return {"ok": False, "error": "Login required."}
+    c = db()
+    c.execute("DELETE FROM messages WHERE chat_id=? AND chat_id IN (SELECT id FROM chats WHERE user_id=?)", (chat_id, u["id"]))
+    c.execute("DELETE FROM chats WHERE id=? AND user_id=?", (chat_id, u["id"]))
+    c.commit()
+    c.close()
+    return {"ok": True}
 
-    user = current_user(request)
+@app.post("/api/chat")
+def chat(body: ChatBody, request: Request):
+    message = body.message.strip()
+    if not message:
+        return {"ok": False, "error": "Please type a message."}
 
-    if not user:
+    u = get_user(request)
 
-        raise HTTPException(
-            401,
-            "Login madi."
-        )
-
-    conn = db()
-
-    conn.execute("""
-        DELETE FROM messages
-        WHERE chat_id=?
-    """, (
-        chat_id,
-    ))
-
-    conn.execute("""
-        DELETE FROM chats
-        WHERE id=?
-        AND user_id=?
-    """, (
-        chat_id,
-        user["id"]
-    ))
-
-    conn.commit()
-    conn.close()
-
-    return {
-        "ok": True
-    }
-
-
-# ============================================================
-# PLANS
-# ============================================================
-
-@app.get("/api/plans")
-async def get_plans():
-
-    return {
-        "plans": [
-            {
-                "name": "Free",
-                "price": 0,
-                "description": "Basic access"
-            },
-            {
-                "name": "Plus",
-                "price": 499,
-                "description": "More AI usage"
-            },
-            {
-                "name": "Pro",
-                "price": 999,
-                "description": "Higher usage"
+    # Exactly four guest questions are allowed.
+    if not u:
+        count = int(request.cookies.get("nirale_guest_count", "0") or 0)
+        if count >= 4:
+            return {
+                "ok": False,
+                "error": "LOGIN_REQUIRED",
+                "message": "Please login or create an account to continue."
             }
-        ]
-    }
 
+    if is_creator_question(message):
+        answer = CREATOR_REPLY
+    else:
+        history = []
+        chat_id = body.chat_id
 
-@app.post("/api/upgrade")
-async def upgrade(
-    request: Request,
-    data: UpgradeData
-):
+        if u and chat_id:
+            c = db()
+            rows = c.execute("""
+                SELECT role,content FROM messages
+                WHERE chat_id=? AND chat_id IN (SELECT id FROM chats WHERE user_id=?)
+                ORDER BY id DESC LIMIT 12
+            """, (chat_id, u["id"])).fetchall()
+            history = list(reversed([dict(x) for x in rows]))
+            c.close()
 
-    user = current_user(request)
+        answer = ask_gemini(message, history)
 
-    if not user:
+    if u:
+        c = db()
+        chat_id = body.chat_id
 
-        raise HTTPException(
-            401,
-            "Login madi."
+        if chat_id:
+            owned = c.execute(
+                "SELECT id FROM chats WHERE id=? AND user_id=?",
+                (chat_id, u["id"])
+            ).fetchone()
+        else:
+            owned = None
+
+        if not owned:
+            title = re.sub(r"\s+", " ", message)[:55] or "New Chat"
+            cur = c.execute("""
+                INSERT INTO chats(user_id,title,created_at,updated_at)
+                VALUES(?,?,?,?,?)
+            """, (u["id"], title, now(), now()))
+            chat_id = cur.lastrowid
+
+        c.execute(
+            "INSERT INTO messages(chat_id,role,content,created_at) VALUES(?,?,?,?)",
+            (chat_id, "user", message, now())
         )
-
-    if data.plan not in [
-        "Free",
-        "Plus",
-        "Pro"
-    ]:
-
-        raise HTTPException(
-            400,
-            "Invalid plan."
+        c.execute(
+            "INSERT INTO messages(chat_id,role,content,created_at) VALUES(?,?,?,?)",
+            (chat_id, "assistant", answer, now())
         )
-
-    if data.plan == "Free":
-
-        conn = db()
-
-        conn.execute("""
-            UPDATE users
-            SET plan='Free'
-            WHERE id=?
-        """, (
-            user["id"],
-        ))
-
-        conn.commit()
-        conn.close()
-
-        return {
-            "ok": True,
-            "plan": "Free"
-        }
-
-    return {
-        "ok": False,
-        "payment_required": True,
-        "message":
-            "Payment gateway connect madbeku."
-    }
-
-
-# ============================================================
-# ADMIN
-# ============================================================
-
-def require_admin(request: Request):
-
-    user = current_user(request)
-
-    if not user:
-        raise HTTPException(
-            401,
-            "Login madi."
+        c.execute("""
+            INSERT INTO usage(user_id,email,question,created_at,plan)
+            VALUES(?,?,?,?,?)
+        """, (u["id"], u["email"], message, now(), u["plan"]))
+        c.execute(
+            "UPDATE chats SET updated_at=? WHERE id=?", (now(), chat_id)
         )
+        c.commit()
+        c.close()
 
-    if not OWNER_EMAIL:
-        raise HTTPException(
-            403,
-            "OWNER_EMAIL not configured."
-        )
+        return {"ok": True, "answer": answer, "chat_id": chat_id}
 
-    if user["email"].lower() != OWNER_EMAIL:
-        raise HTTPException(
-            403,
-            "Admin access denied."
-        )
+    # guest usage
+    old = int(request.cookies.get("nirale_guest_count", "0") or 0)
+    new = old + 1
+    c = db()
+    c.execute("""
+        INSERT INTO usage(user_id,email,question,created_at,plan)
+        VALUES(NULL,NULL,?,?,?)
+    """, (message, now(), "Guest"))
+    c.commit()
+    c.close()
 
-    return user
-
-
-@app.get("/api/admin/stats")
-async def admin_stats(
-    request: Request
-):
-
-    require_admin(request)
-
-    conn = db()
-
-    users = conn.execute(
-        "SELECT COUNT(*) c FROM users"
-    ).fetchone()["c"]
-
-    chats = conn.execute(
-        "SELECT COUNT(*) c FROM chats"
-    ).fetchone()["c"]
-
-    messages = conn.execute(
-        "SELECT COUNT(*) c FROM usage"
-    ).fetchone()["c"]
-
-    conn.close()
-
-    return {
-        "users": users,
-        "chats": chats,
-        "messages": messages
-    }
-
+    from fastapi.responses import JSONResponse
+    r = JSONResponse({
+        "ok": True,
+        "answer": answer,
+        "guest_count": new,
+        "guest_remaining": max(0, 4-new)
+    })
+    r.set_cookie("nirale_guest_count", str(new), httponly=True, samesite="lax", secure=False, max_age=60*60*24*30)
+    return r
 
 @app.get("/api/admin/users")
-async def admin_users(
-    request: Request
-):
-
-    require_admin(request)
-
-    conn = db()
-
-    rows = conn.execute("""
-        SELECT
-            id,
-            email,
-            plan,
-            created_at,
-            last_active
-        FROM users
-        ORDER BY id DESC
+def admin_users(request: Request):
+    u = get_user(request)
+    if not u or not OWNER_EMAIL or u["email"] != OWNER_EMAIL:
+        return {"ok": False, "error": "Admin access denied."}
+    c = db()
+    rows = c.execute("""
+        SELECT id,email,plan,created_at,last_active
+        FROM users ORDER BY last_active DESC
     """).fetchall()
-
-    conn.close()
-
-    return {
-        "users": [
-            dict(x)
-            for x in rows
-        ]
-    }
-
+    c.close()
+    return {"ok": True, "users": [dict(x) for x in rows]}
 
 @app.get("/api/admin/activity")
-async def admin_activity(
-    request: Request
-):
-
-    require_admin(request)
-
-    conn = db()
-
-    rows = conn.execute("""
-        SELECT
-            usage.id,
-            users.email,
-            usage.message,
-            usage.created_at
-        FROM usage
-        JOIN users
-        ON users.id=usage.user_id
-        ORDER BY usage.id DESC
-        LIMIT 200
+def admin_activity(request: Request):
+    u = get_user(request)
+    if not u or not OWNER_EMAIL or u["email"] != OWNER_EMAIL:
+        return {"ok": False, "error": "Admin access denied."}
+    c = db()
+    rows = c.execute("""
+        SELECT email,question,created_at,plan
+        FROM usage ORDER BY id DESC LIMIT 300
     """).fetchall()
+    c.close()
+    return {"ok": True, "activity": [dict(x) for x in rows]}
 
-    conn.close()
+@app.get("/api/admin/stats")
+def admin_stats(request: Request):
+    u = get_user(request)
+    if not u or not OWNER_EMAIL or u["email"] != OWNER_EMAIL:
+        return {"ok": False, "error": "Admin access denied."}
+    c = db()
+    users = c.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]
+    messages = c.execute("SELECT COUNT(*) n FROM usage").fetchone()["n"]
+    c.close()
+    return {"ok": True, "users": users, "messages": messages}
 
-    return {
-        "activity": [
-            dict(x)
-            for x in rows
-        ]
-    }
-
-
-# ============================================================
-# FRONTEND
-# ============================================================
-
-HTML = r"""
-<!DOCTYPE html>
-
+HTML = r"""<!doctype html>
 <html lang="en">
-
 <head>
-
-<meta charset="UTF-8">
-
-<meta
-name="viewport"
-content="width=device-width,initial-scale=1.0"
->
-
-<title>✨ Nirale AI</title>
-
-
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Nirale AI</title>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-
-
-<link
-rel="stylesheet"
-href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css"
->
-
-
-<script
-src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js">
-</script>
-
-
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
 <style>
-
-/* =========================================================
-   RESET
-========================================================= */
-
-* {
-    box-sizing: border-box;
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;font-family:Arial,Helvetica,sans-serif;background:#fff;color:#202123}
+button,input,textarea{font:inherit}
+button{cursor:pointer}
+.app{display:flex;width:100%;height:100dvh;overflow:hidden}
+.sidebar{width:300px;flex:0 0 300px;height:100dvh;background:#f7f7f8;border-right:1px solid #ddd;display:flex;flex-direction:column;transition:width .2s,transform .25s;overflow:hidden;z-index:1000}
+.sidebar.closed{width:0;flex-basis:0;border:0}
+.sidebar-top{padding:12px}
+.side-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.brand{font-size:19px;font-weight:700}
+.icon-btn{border:0;background:transparent;border-radius:9px;padding:8px;font-size:19px}
+.icon-btn:hover{background:#e5e5e5}
+.sidebar-search{display:flex;width:100%;margin:0 0 10px}
+.sidebar-search input{width:100%;height:44px;border:1px solid #d0d0d0;border-radius:12px;padding:0 13px;outline:none;background:#fff;color:#222}
+.sidebar-search input:focus{border-color:#999}
+.new-chat{width:100%;height:44px;border:1px solid #ccc;background:#fff;border-radius:11px;text-align:left;padding:0 13px;font-weight:600}
+.menu-list{padding:4px 10px}
+.menu-item{display:flex;align-items:center;gap:11px;width:100%;height:43px;border:0;background:transparent;border-radius:10px;text-align:left;padding:0 11px;color:#222}
+.menu-item:hover{background:#e8e8e8}
+.recents-title{font-size:12px;color:#777;padding:15px 13px 7px}
+.recents{overflow:auto;flex:1;padding:0 10px}
+.recent-chat{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 10px;border-radius:9px;cursor:pointer;font-size:14px}
+.recent-chat:hover{background:#e8e8e8}
+.recent-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.account{border-top:1px solid #ddd;padding:10px}
+.account-btn{width:100%;display:flex;align-items:center;gap:9px;border:0;background:transparent;border-radius:10px;padding:9px;text-align:left}
+.account-btn:hover{background:#e8e8e8}
+.avatar{width:32px;height:32px;border-radius:50%;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px}
+.account-text{min-width:0;flex:1}
+.account-email{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.account-plan{font-size:11px;color:#777}
+.main{min-width:0;flex:1;height:100dvh;display:flex;flex-direction:column;background:#fff}
+.header{height:60px;flex:0 0 60px;border-bottom:1px solid #eee;display:flex;align-items:center;gap:10px;padding:0 14px}
+.menu-open{border:0;background:transparent;font-size:22px;width:40px;height:40px;border-radius:9px}
+.menu-open:hover{background:#f0f0f0}
+.header-title{font-weight:700;flex:1}
+.upgrade{border:0;border-radius:9px;background:#111;color:#fff;padding:9px 13px}
+.chatbox{flex:1;overflow:auto;padding:25px max(14px,calc((100% - 850px)/2));scroll-behavior:smooth}
+.welcome{text-align:center;margin:15vh auto 0;max-width:620px}
+.welcome h1{font-size:30px;margin:0 0 10px}
+.welcome p{color:#666;margin:0}
+.msg-row{display:flex;margin:16px 0}
+.msg-row.user{justify-content:flex-end}
+.msg{max-width:82%;padding:12px 15px;border-radius:16px;line-height:1.55;overflow-wrap:anywhere}
+.msg.user{background:#f1f1f1}
+.msg.assistant{background:transparent}
+.msg pre{position:relative;overflow:auto;background:#111;color:#eee;padding:14px;border-radius:10px}
+.msg code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.code-wrap{position:relative}
+.copy-code{position:absolute;right:8px;top:8px;border:1px solid #555;background:#222;color:#fff;border-radius:6px;padding:5px 8px;font-size:12px}
+.thinking{color:#777;font-style:italic;padding:10px 5px}
+.footer{padding:10px 14px calc(10px + env(safe-area-inset-bottom));background:#fff}
+.composer{max-width:850px;margin:auto;border:1px solid #ccc;border-radius:18px;display:flex;align-items:flex-end;gap:6px;padding:7px;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.05)}
+.composer textarea{flex:1;min-width:0;max-height:150px;resize:none;border:0;outline:0;padding:9px 6px;font-size:15px}
+.round{width:40px;height:40px;flex:0 0 40px;border:0;border-radius:50%;background:transparent;font-size:20px}
+.round:hover{background:#eee}
+.send{background:#111;color:#fff}
+.plus-menu{display:none;position:absolute;bottom:75px;left:14px;width:220px;background:#fff;border:1px solid #ddd;border-radius:13px;padding:7px;box-shadow:0 8px 30px rgba(0,0,0,.15);z-index:1200}
+.plus-menu.open{display:block}
+.plus-item{display:block;width:100%;border:0;background:transparent;text-align:left;padding:11px;border-radius:9px}
+.plus-item:hover{background:#f1f1f1}
+.overlay{display:none}
+.auth{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;align-items:center;justify-content:center;padding:18px}
+.auth.open{display:flex}
+.auth-card{width:100%;max-width:400px;background:#fff;border-radius:18px;padding:24px;box-shadow:0 15px 50px rgba(0,0,0,.25)}
+.auth-card h2{margin-top:0}
+.auth-card input{display:block;width:100%;height:46px;margin:10px 0;border:1px solid #ccc;border-radius:10px;padding:0 12px}
+.auth-primary{width:100%;height:46px;border:0;border-radius:10px;background:#111;color:#fff;margin-top:8px}
+.auth-switch{text-align:center;margin-top:16px;font-size:14px}
+.auth-switch a{color:#111;font-weight:700;cursor:pointer;text-decoration:underline}
+.close-auth{float:right;border:0;background:transparent;font-size:22px}
+.account-pop{display:none;position:fixed;right:14px;bottom:70px;width:260px;background:#fff;border:1px solid #ddd;border-radius:14px;padding:12px;box-shadow:0 10px 30px rgba(0,0,0,.15);z-index:1500}
+.account-pop.open{display:block}
+.pop-btn{width:100%;height:40px;border:0;background:transparent;text-align:left;border-radius:8px;padding:0 10px}
+.pop-btn:hover{background:#eee}
+@media(max-width:700px){
+ .sidebar{position:fixed;left:0;top:0;width:300px;max-width:86vw;transform:translateX(-100%);box-shadow:8px 0 30px rgba(0,0,0,.18)}
+ .sidebar.open{transform:translateX(0)}
+ .sidebar.closed{width:300px;flex-basis:auto}
+ .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999}
+ .overlay.open{display:block}
+ .header{height:56px;flex-basis:56px;padding:0 8px}
+ .header-title{font-size:15px}
+ .upgrade{padding:8px 10px;font-size:13px}
+ .chatbox{padding:15px 9px 95px}
+ .welcome{margin-top:18vh}
+ .welcome h1{font-size:25px}
+ .msg{max-width:94%;font-size:15px}
+ .footer{padding:7px 7px calc(7px + env(safe-area-inset-bottom));position:relative;z-index:900}
+ .composer{border-radius:17px;padding:6px}
+ .composer textarea{font-size:15px}
+ .plus-menu{position:fixed;left:8px;bottom:72px;width:calc(100vw - 16px);max-width:370px}
+ .sidebar-search{display:flex!important;margin:0 0 10px}
+ .sidebar-search input{display:block!important;height:44px;font-size:15px}
 }
-
-html,
-body {
-    width: 100%;
-    height: 100%;
-    margin: 0;
-}
-
-body {
-    font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
-
-    background: #000;
-
-    color: #fff;
-
-    overflow: hidden;
-}
-
-button,
-input,
-textarea {
-    font: inherit;
-}
-
-button {
-    cursor: pointer;
-}
-
-.hidden {
-    display: none !important;
-}
-
-
-/* =========================================================
-   APP
-========================================================= */
-
-#app {
-    width: 100%;
-    height: 100vh;
-
-    display: flex;
-
-    background: #000;
-}
-
-
-/* =========================================================
-   SIDEBAR
-========================================================= */
-
-.sidebar {
-    width: 300px;
-
-    height: 100vh;
-
-    flex-shrink: 0;
-
-    background: #0b0b0b;
-
-    border-right:
-        1px solid #292929;
-
-    display: flex;
-
-    flex-direction: column;
-
-    overflow: hidden;
-
-    transition:
-        width .2s ease,
-        transform .2s ease;
-}
-
-
-.sidebar-header {
-    height: 66px;
-
-    display: flex;
-
-    align-items: center;
-
-    padding:
-        0 14px;
-
-    gap: 7px;
-}
-
-
-.sidebar-logo {
-    flex: 1;
-
-    font-size: 19px;
-
-    font-weight: 700;
-}
-
-
-.sidebar-top-button {
-    width: 40px;
-    height: 40px;
-
-    border: 0;
-
-    border-radius: 10px;
-
-    color: #fff;
-
-    background: transparent;
-
-    font-size: 22px;
-}
-
-
-.sidebar-top-button:hover {
-    background: #222;
-}
-
-
-/* =========================================================
-   MENU
-========================================================= */
-
-.sidebar-menu {
-    padding:
-        5px 10px;
-}
-
-
-.menu-item {
-    width: 100%;
-
-    min-height: 48px;
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 13px;
-
-    padding:
-        9px 12px;
-
-    margin-bottom: 2px;
-
-    border: 0;
-
-    border-radius: 11px;
-
-    background: transparent;
-
-    color: #fff;
-
-    text-align: left;
-
-    font-size: 16px;
-}
-
-
-.menu-item:hover {
-    background: #202020;
-}
-
-
-.menu-item.active {
-    background: #1f1f1f;
-}
-
-
-.menu-icon {
-    width: 26px;
-
-    text-align: center;
-
-    font-size: 20px;
-}
-
-
-.menu-text {
-    flex: 1;
-}
-
-
-.menu-plus {
-    font-size: 24px;
-
-    color: #aaa;
-}
-
-
-.more-content {
-    display: none;
-}
-
-
-.more-content.open {
-    display: block;
-}
-
-
-/* =========================================================
-   RECENTS
-========================================================= */
-
-.recents-header {
-    display: flex;
-
-    align-items: center;
-
-    padding:
-        18px 15px 7px;
-
-    color: #999;
-
-    font-size: 14px;
-
-    font-weight: 600;
-}
-
-
-.recents-title {
-    flex: 1;
-}
-
-
-.small-action {
-    border: 0;
-
-    background: transparent;
-
-    color: #aaa;
-
-    font-size: 18px;
-
-    padding: 4px;
-}
-
-
-.small-action:hover {
-    color: #fff;
-}
-
-
-.recents {
-    flex: 1;
-
-    overflow-y: auto;
-
-    padding:
-        0 9px;
-}
-
-
-.recent-row {
-    width: 100%;
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 5px;
-
-    border-radius: 9px;
-
-    padding:
-        8px 8px;
-
-    color: #eee;
-
-    background: transparent;
-}
-
-
-.recent-row:hover {
-    background: #1d1d1d;
-}
-
-
-.recent-title {
-    flex: 1;
-
-    min-width: 0;
-
-    white-space: nowrap;
-
-    overflow: hidden;
-
-    text-overflow: ellipsis;
-
-    font-size: 14px;
-
-    text-align: left;
-}
-
-
-.recent-options {
-    border: 0;
-
-    background: transparent;
-
-    color: #999;
-
-    font-size: 16px;
-}
-
-
-/* =========================================================
-   ACCOUNT
-========================================================= */
-
-.sidebar-account {
-    border-top:
-        1px solid #292929;
-
-    padding: 10px;
-}
-
-
-.account-button {
-    width: 100%;
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 10px;
-
-    padding: 8px;
-
-    border: 0;
-
-    border-radius: 10px;
-
-    background: transparent;
-
-    color: #fff;
-
-    text-align: left;
-}
-
-
-.account-button:hover {
-    background: #202020;
-}
-
-
-.avatar {
-    width: 38px;
-    height: 38px;
-
-    flex-shrink: 0;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    border-radius: 50%;
-
-    background: #8c999d;
-
-    font-weight: 700;
-}
-
-
-.account-details {
-    min-width: 0;
-
-    flex: 1;
-}
-
-
-.account-name {
-    white-space: nowrap;
-
-    overflow: hidden;
-
-    text-overflow: ellipsis;
-
-    font-size: 14px;
-}
-
-
-.account-plan {
-    color: #999;
-
-    font-size: 12px;
-
-    margin-top: 2px;
-}
-
-
-/* =========================================================
-   MAIN
-========================================================= */
-
-.main {
-    min-width: 0;
-
-    flex: 1;
-
-    height: 100vh;
-
-    display: flex;
-
-    flex-direction: column;
-
-    background: #000;
-}
-
-
-/* =========================================================
-   HEADER
-========================================================= */
-
-.header {
-    height: 62px;
-
-    flex-shrink: 0;
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 10px;
-
-    padding:
-        0 14px;
-
-    border-bottom:
-        1px solid #1f1f1f;
-}
-
-
-.mobile-menu {
-    display: none;
-
-    border: 0;
-
-    background: transparent;
-
-    color: #fff;
-
-    font-size: 24px;
-}
-
-
-.header-logo {
-    font-size: 19px;
-
-    font-weight: 700;
-}
-
-
-.header-space {
-    flex: 1;
-}
-
-
-.upgrade {
-    border: 0;
-
-    border-radius: 10px;
-
-    padding:
-        9px 14px;
-
-    background: #fff;
-
-    color: #000;
-
-    font-weight: 600;
-}
-
-
-.upgrade:hover {
-    background: #ddd;
-}
-
-
-/* =========================================================
-   CHAT
-========================================================= */
-
-.chatbox {
-    flex: 1;
-
-    overflow-y: auto;
-
-    padding:
-        28px 20px 120px;
-}
-
-
-.welcome {
-    max-width: 850px;
-
-    margin:
-        110px auto 0;
-
-    text-align: center;
-}
-
-
-.welcome h1 {
-    font-size: 34px;
-
-    margin-bottom: 10px;
-}
-
-
-.welcome p {
-    color: #888;
-}
-
-
-/* =========================================================
-   MESSAGES
-========================================================= */
-
-.message {
-    max-width: 850px;
-
-    margin:
-        0 auto 22px;
-
-    line-height: 1.65;
-
-    word-wrap: break-word;
-}
-
-
-.user-message {
-    display: flex;
-
-    justify-content: flex-end;
-}
-
-
-.user-bubble {
-    max-width: 78%;
-
-    padding:
-        11px 15px;
-
-    border-radius:
-        17px;
-
-    background: #2a2a2a;
-}
-
-
-.assistant-message {
-    color: #eee;
-}
-
-
-.assistant-message pre {
-    position: relative;
-
-    overflow-x: auto;
-
-    padding:
-        45px 14px 14px;
-
-    border-radius: 12px;
-}
-
-
-.assistant-message img {
-    max-width: 100%;
-}
-
-
-.code-actions {
-    position: absolute;
-
-    top: 8px;
-
-    right: 8px;
-
-    display: flex;
-
-    gap: 5px;
-}
-
-
-.code-actions button {
-    border: 1px solid #555;
-
-    border-radius: 7px;
-
-    background: #222;
-
-    color: #fff;
-
-    padding:
-        5px 8px;
-
-    font-size: 12px;
-}
-
-
-.thinking {
-    max-width: 850px;
-
-    margin:
-        0 auto 20px;
-
-    color: #888;
-
-    font-size: 14px;
-}
-
-
-/* =========================================================
-   FOOTER
-========================================================= */
-
-.footer {
-    position: relative;
-
-    flex-shrink: 0;
-
-    padding:
-        10px 18px 18px;
-
-    background: #000;
-}
-
-
-.input-box {
-    max-width: 850px;
-
-    margin: auto;
-
-    display: flex;
-
-    align-items: flex-end;
-
-    gap: 4px;
-
-    padding: 7px;
-
-    border:
-        1px solid #404040;
-
-    border-radius: 18px;
-
-    background: #161616;
-}
-
-
-.message-input {
-    flex: 1;
-
-    min-height: 42px;
-
-    max-height: 140px;
-
-    resize: none;
-
-    outline: none;
-
-    border: 0;
-
-    background: transparent;
-
-    color: #fff;
-
-    padding:
-        10px 8px;
-}
-
-
-.message-input::placeholder {
-    color: #777;
-}
-
-
-.icon-button {
-    width: 40px;
-    height: 40px;
-
-    flex-shrink: 0;
-
-    border: 0;
-
-    border-radius: 10px;
-
-    background: transparent;
-
-    color: #fff;
-
-    font-size: 19px;
-}
-
-
-.icon-button:hover {
-    background: #292929;
-}
-
-
-.send-button {
-    background: #fff;
-
-    color: #000;
-
-    border-radius: 50%;
-}
-
-
-.mic-listening {
-    background: #d22;
-
-    color: #fff;
-}
-
-
-/* =========================================================
-   PLUS MENU
-========================================================= */
-
-.plus-menu {
-    position: absolute;
-
-    left: 18px;
-
-    bottom: 78px;
-
-    width: 245px;
-
-    padding: 8px;
-
-    background: #171717;
-
-    border:
-        1px solid #383838;
-
-    border-radius: 14px;
-
-    box-shadow:
-        0 15px 45px rgba(0,0,0,.5);
-
-    z-index: 50;
-}
-
-
-.plus-item {
-    width: 100%;
-
-    border: 0;
-
-    background: transparent;
-
-    color: #fff;
-
-    text-align: left;
-
-    padding:
-        11px 12px;
-
-    border-radius: 9px;
-}
-
-
-.plus-item:hover {
-    background: #292929;
-}
-
-
-/* =========================================================
-   MODALS
-========================================================= */
-
-.modal {
-    position: fixed;
-
-    inset: 0;
-
-    z-index: 2000;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    padding: 20px;
-
-    background:
-        rgba(0,0,0,.65);
-}
-
-
-.modal-card {
-    width: 100%;
-
-    max-width: 520px;
-
-    max-height: 90vh;
-
-    overflow-y: auto;
-
-    padding: 25px;
-
-    border:
-        1px solid #333;
-
-    border-radius: 18px;
-
-    background: #171717;
-
-    color: #fff;
-}
-
-
-.close-modal {
-    float: right;
-
-    border: 0;
-
-    background: transparent;
-
-    color: #aaa;
-
-    font-size: 25px;
-}
-
-
-.modal-card h2 {
-    margin-top: 0;
-}
-
-
-/* =========================================================
-   AUTH
-========================================================= */
-
-.auth-screen {
-    position: fixed;
-
-    inset: 0;
-
-    z-index: 5000;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    padding: 20px;
-
-    background: #000;
-}
-
-
-.auth-card {
-    width: 100%;
-
-    max-width: 420px;
-
-    padding: 30px;
-
-    border:
-        1px solid #333;
-
-    border-radius: 20px;
-
-    background: #151515;
-}
-
-
-.auth-logo {
-    text-align: center;
-
-    font-size: 29px;
-
-    font-weight: 700;
-
-    margin-bottom: 8px;
-}
-
-
-.auth-description {
-    text-align: center;
-
-    color: #999;
-
-    margin-bottom: 24px;
-}
-
-
-.auth-input {
-    width: 100%;
-
-    padding: 13px;
-
-    margin-bottom: 12px;
-
-    border:
-        1px solid #444;
-
-    border-radius: 11px;
-
-    background: #0c0c0c;
-
-    color: #fff;
-
-    outline: none;
-}
-
-
-.auth-button {
-    width: 100%;
-
-    padding: 13px;
-
-    border: 0;
-
-    border-radius: 11px;
-
-    background: #fff;
-
-    color: #000;
-
-    font-weight: 700;
-}
-
-
-.auth-switch {
-    text-align: center;
-
-    color: #888;
-
-    margin-top: 18px;
-}
-
-
-.auth-switch button {
-    border: 0;
-
-    background: transparent;
-
-    color: #fff;
-
-    font-weight: 700;
-}
-
-
-/* =========================================================
-   PLANS
-========================================================= */
-
-.plan {
-    border:
-        1px solid #3a3a3a;
-
-    border-radius: 13px;
-
-    padding: 16px;
-
-    margin-top: 12px;
-}
-
-
-.plan button {
-    border: 0;
-
-    border-radius: 8px;
-
-    padding:
-        8px 12px;
-
-    background: #fff;
-
-    color: #000;
-
-    font-weight: 600;
-}
-
-
-/* =========================================================
-   MOBILE
-========================================================= */
-
-@media (max-width: 700px) {
-
-    .sidebar {
-        position: fixed;
-
-        left: 0;
-        top: 0;
-        bottom: 0;
-
-        z-index: 3000;
-
-        transform:
-            translateX(-100%);
-
-        width: 300px;
-
-        box-shadow:
-            10px 0 40px rgba(0,0,0,.6);
-    }
-
-
-    .sidebar.open {
-        transform:
-            translateX(0);
-    }
-
-
-    .mobile-menu {
-        display: block;
-    }
-
-
-    .sidebar-overlay {
-        display: none;
-
-        position: fixed;
-
-        inset: 0;
-
-        z-index: 2999;
-
-        background:
-            rgba(0,0,0,.6);
-    }
-
-
-    .sidebar-overlay.open {
-        display: block;
-    }
-
-
-    .chatbox {
-        padding:
-            18px 13px 110px;
-    }
-
-
-    .footer {
-        padding:
-            8px 8px
-            calc(
-                8px +
-                env(safe-area-inset-bottom)
-            );
-    }
-
-
-    .welcome {
-        margin-top: 80px;
-    }
-
-
-    .welcome h1 {
-        font-size: 27px;
-    }
-
-
-    .user-bubble {
-        max-width: 88%;
-    }
-
-
-    .header {
-        height: 58px;
-    }
-
-
-    .upgrade {
-        padding:
-            8px 10px;
-
-        font-size: 13px;
-    }
-}
-
-
-/* =========================================================
-   DESKTOP SCREEN BLOCK
-========================================================= */
-
-@media (min-width: 701px) {
-
-    .sidebar.closed {
-        width: 0;
-
-        border: 0;
-    }
-}
-
 </style>
-
 </head>
-
-
 <body>
-
-
-<!-- ========================================================
-     AUTH SCREEN
-     Hidden when Nirale AI first opens.
-======================================================== -->
-
-<div
-    id="authScreen"
-    class="auth-screen hidden"
->
-
-    <div class="auth-card">
-
-        <div class="auth-logo">
-            ✨ Nirale AI
-        </div>
-
-        <div class="auth-description">
-            Login to continue using Nirale AI
-        </div>
-
-
-        <!-- LOGIN -->
-
-        <div id="loginForm">
-
-            <input
-                id="loginEmail"
-                class="auth-input"
-                type="email"
-                placeholder="Email"
-            >
-
-            <input
-                id="loginPassword"
-                class="auth-input"
-                type="password"
-                placeholder="Password"
-            >
-
-            <button
-                class="auth-button"
-                onclick="login()"
-            >
-                Login
-            </button>
-
-            <div class="auth-switch">
-
-                Don't have an account?
-
-                <button
-                    onclick="showSignup()"
-                >
-                    Create account
-                </button>
-
-            </div>
-
-        </div>
-
-
-        <!-- SIGNUP -->
-
-        <div
-            id="signupForm"
-            class="hidden"
-        >
-
-            <input
-                id="signupEmail"
-                class="auth-input"
-                type="email"
-                placeholder="Email"
-            >
-
-            <input
-                id="signupPassword"
-                class="auth-input"
-                type="password"
-                placeholder="Password"
-            >
-
-            <button
-                class="auth-button"
-                onclick="signup()"
-            >
-                Create account
-            </button>
-
-            <div class="auth-switch">
-
-                Already have an account?
-
-                <button
-                    onclick="showLogin()"
-                >
-                    Login
-                </button>
-
-            </div>
-
-        </div>
-
+<div class="app">
+<aside id="sidebar" class="sidebar">
+  <div class="sidebar-top">
+    <div class="side-head">
+      <div class="brand">✨ Nirale AI</div>
+      <button class="icon-btn" onclick="closeSidebar()" aria-label="Close sidebar">×</button>
     </div>
-
-</div>
-
-
-<!-- ========================================================
-     APP
-======================================================== -->
-
-<div id="app">
-
-
-    <!-- SIDEBAR -->
-
-    <aside
-        id="sidebar"
-        class="sidebar"
-    >
-
-        <div class="sidebar-header">
-
-            <div class="sidebar-logo">
-                ✨ Nirale AI
-            </div>
-
-            <button
-                class="sidebar-top-button"
-                onclick="searchChats()"
-                title="Search"
-            >
-                🔍
-            </button>
-
-            <button
-                class="sidebar-top-button"
-                onclick="closeSidebar()"
-                title="Close"
-            >
-                ×
-            </button>
-
-        </div>
-
-
-        <!-- MAIN OPTIONS -->
-
-        <div class="sidebar-menu">
-
-
-            <button
-                class="menu-item active"
-                onclick="newChat(); closeSidebar();"
-            >
-                <span class="menu-icon">
-                    ✏️
-                </span>
-
-                <span class="menu-text">
-                    New chat
-                </span>
-            </button>
-
-
-            <button
-                class="menu-item"
-                onclick="openLibrary()"
-            >
-                <span class="menu-icon">
-                    📚
-                </span>
-
-                <span class="menu-text">
-                    Library
-                </span>
-            </button>
-
-
-            <button
-                class="menu-item"
-                onclick="openProjects()"
-            >
-                <span class="menu-icon">
-                    📁
-                </span>
-
-                <span class="menu-text">
-                    Projects
-                </span>
-
-                <span class="menu-plus">
-                    ＋
-                </span>
-            </button>
-
-
-            <button
-                class="menu-item"
-                onclick="openScheduled()"
-            >
-                <span class="menu-icon">
-                    🕐
-                </span>
-
-                <span class="menu-text">
-                    Scheduled
-                </span>
-            </button>
-
-
-            <button
-                class="menu-item"
-                onclick="openPlugins()"
-            >
-                <span class="menu-icon">
-                    🔌
-                </span>
-
-                <span class="menu-text">
-                    Plugins
-                </span>
-            </button>
-
-
-            <button
-                class="menu-item"
-                onclick="openCodex()"
-            >
-                <span class="menu-icon">
-                    💻
-                </span>
-
-                <span class="menu-text">
-                    Codex
-                </span>
-
-                <span>
-                    ↗
-                </span>
-            </button>
-
-
-            <button
-                class="menu-item"
-                onclick="toggleMore()"
-            >
-                <span class="menu-icon">
-                    •••
-                </span>
-
-                <span class="menu-text">
-                    More
-                </span>
-            </button>
-
-
-            <div
-                id="moreContent"
-                class="more-content"
-            >
-
-                <button
-                    class="menu-item"
-                    onclick="openSettings()"
-                >
-                    ⚙️
-                    <span class="menu-text">
-                        Settings
-                    </span>
-                </button>
-
-                <button
-                    class="menu-item"
-                    onclick="openHelp()"
-                >
-                    ❓
-                    <span class="menu-text">
-                        Help
-                    </span>
-                </button>
-
-            </div>
-
-        </div>
-
-
-        <!-- RECENTS HEADER -->
-
-        <div class="recents-header">
-
-            <span class="recents-title">
-                Recents
-            </span>
-
-            <button
-                class="small-action"
-                onclick="newChat()"
-                title="New chat"
-            >
-                ✏️
-            </button>
-
-            <button
-                class="small-action"
-                onclick="recentOptions()"
-            >
-                •••
-            </button>
-
-        </div>
-
-
-        <!-- RECENTS -->
-
-        <div
-            id="recents"
-            class="recents"
-        >
-        </div>
-
-
-        <!-- ACCOUNT -->
-
-        <div class="sidebar-account">
-
-            <button
-                class="account-button"
-                onclick="openAccount()"
-            >
-
-                <div
-                    id="avatar"
-                    class="avatar"
-                >
-                    G
-                </div>
-
-                <div class="account-details">
-
-                    <div
-                        id="sideEmail"
-                        class="account-name"
-                    >
-                        Guest
-                    </div>
-
-                    <div
-                        id="sidePlan"
-                        class="account-plan"
-                    >
-                        4 free questions
-                    </div>
-
-                </div>
-
-                <span>
-                    •••
-                </span>
-
-            </button>
-
-        </div>
-
-    </aside>
-
-
-    <!-- MOBILE OVERLAY -->
-
-    <div
-        id="sidebarOverlay"
-        class="sidebar-overlay"
-        onclick="closeSidebar()"
-    ></div>
-
-
-    <!-- MAIN -->
-
-    <main class="main">
-
-
-        <!-- HEADER -->
-
-        <header class="header">
-
-            <button
-                class="mobile-menu"
-                onclick="openSidebar()"
-            >
-                ☰
-            </button>
-
-            <div class="header-logo">
-                ✨ Nirale AI
-            </div>
-
-            <div class="header-space"></div>
-
-            <!-- ONLY UPGRADE BUTTON -->
-
-            <button
-                class="upgrade"
-                onclick="openUpgrade()"
-            >
-                ⭐ Upgrade
-            </button>
-
-        </header>
-
-
-        <!-- CHAT -->
-
-        <div
-            id="chatbox"
-            class="chatbox"
-        >
-
-            <div
-                id="welcome"
-                class="welcome"
-            >
-
-                <h1>
-                    How can I help you?
-                </h1>
-
-                <p>
-                    Ask Nirale AI anything.
-                </p>
-
-            </div>
-
-        </div>
-
-
-        <!-- FOOTER -->
-
-        <div class="footer">
-
-
-            <!-- PLUS MENU -->
-
-            <div
-                id="plusMenu"
-                class="plus-menu hidden"
-            >
-
-                <button
-                    class="plus-item"
-                    onclick="attachFile()"
-                >
-                    📎 Attach files
-                </button>
-
-                <button
-                    class="plus-item"
-                    onclick="openCamera()"
-                >
-                    📷 Camera
-                </button>
-
-                <button
-                    class="plus-item"
-                    onclick="openGallery()"
-                >
-                    🖼️ Photos / Gallery
-                </button>
-
-                <button
-                    class="plus-item"
-                    onclick="webSearch()"
-                >
-                    🔎 Web search
-                </button>
-
-                <button
-                    class="plus-item"
-                    onclick="createImage()"
-                >
-                    🎨 Create image
-                </button>
-
-                <button
-                    class="plus-item"
-                    onclick="openMap()"
-                >
-                    🗺️ Map
-                </button>
-
-            </div>
-
-
-            <!-- INPUT -->
-
-            <div class="input-box">
-
-                <button
-                    class="icon-button"
-                    onclick="togglePlus()"
-                >
-                    ＋
-                </button>
-
-                <textarea
-                    id="messageInput"
-                    class="message-input"
-                    rows="1"
-                    placeholder="Message Nirale AI..."
-                    onkeydown="handleKey(event)"
-                ></textarea>
-
-                <button
-                    id="micBtn"
-                    class="icon-button"
-                    onclick="startVoice()"
-                    title="Voice"
-                >
-                    🎤
-                </button>
-
-                <button
-                    class="icon-button send-button"
-                    onclick="sendMessage()"
-                >
-                    ↑
-                </button>
-
-            </div>
-
-        </div>
-
-    </main>
-
-</div>
-
-
-<!-- FILE INPUT -->
-
-<input
-    id="fileInput"
-    type="file"
-    hidden
-    onchange="fileSelected(event)"
->
-
-
-<input
-    id="cameraInput"
-    type="file"
-    accept="image/*"
-    capture="environment"
-    hidden
-    onchange="imageSelected(event)"
->
-
-
-<input
-    id="galleryInput"
-    type="file"
-    accept="image/*"
-    hidden
-    onchange="imageSelected(event)"
->
-
-
-<!-- ========================================================
-     ACCOUNT MODAL
-======================================================== -->
-
-<div
-    id="accountModal"
-    class="modal hidden"
->
-
-    <div class="modal-card">
-
-        <button
-            class="close-modal"
-            onclick="closeModals()"
-        >
-            ×
-        </button>
-
-        <h2>
-            👤 Account
-        </h2>
-
-        <p id="accountEmail">
-            Email: Guest
-        </p>
-
-        <p id="accountPlan">
-            Plan: Free
-        </p>
-
-        <button
-            id="logoutBtn"
-            class="auth-button hidden"
-            onclick="logout()"
-        >
-            Logout
-        </button>
-
+    <div class="sidebar-search">
+      <input id="chatSearchInput" type="search" placeholder="Search chats..." autocomplete="off">
     </div>
+    <button class="new-chat" onclick="newChat()">＋ New Chat</button>
+  </div>
 
-</div>
+  <div class="menu-list">
+    <button class="menu-item" onclick="showInfo('Library')">▣ <span>Library</span></button>
+    <button class="menu-item" onclick="showInfo('Projects')">▦ <span>Projects</span></button>
+    <button class="menu-item" onclick="showInfo('Scheduled')">◷ <span>Scheduled</span></button>
+    <button class="menu-item" onclick="showInfo('Plugins')">⊞ <span>Plugins</span></button>
+    <button class="menu-item" onclick="showInfo('Codex / Code')">⌘ <span>Codex / Code</span></button>
+    <button class="menu-item" onclick="showInfo('More')">••• <span>More</span></button>
+  </div>
 
+  <div class="recents-title">Recents</div>
+  <div id="recents" class="recents"></div>
 
-<!-- ========================================================
-     UPGRADE
-======================================================== -->
+  <div class="account">
+    <button class="account-btn" onclick="toggleAccount()">
+      <div id="avatar" class="avatar">G</div>
+      <div class="account-text">
+        <div id="accountEmail" class="account-email">Guest</div>
+        <div id="accountPlan" class="account-plan">4 free questions</div>
+      </div>
+      <span>⋯</span>
+    </button>
+  </div>
+</aside>
 
-<div
-    id="upgradeModal"
-    class="modal hidden"
->
+<div id="overlay" class="overlay" onclick="closeSidebar()"></div>
 
-    <div class="modal-card">
+<main class="main">
+  <header class="header">
+    <button class="menu-open" onclick="openSidebar()" aria-label="Open sidebar">☰</button>
+    <div class="header-title">Nirale AI</div>
+    <button class="upgrade" onclick="upgrade()">⭐ Upgrade</button>
+  </header>
 
-        <button
-            class="close-modal"
-            onclick="closeModals()"
-        >
-            ×
-        </button>
-
-        <h2>
-            ⭐ Upgrade Nirale AI
-        </h2>
-
-
-        <div class="plan">
-
-            <h3>
-                Free
-            </h3>
-
-            <p>
-                ₹0
-            </p>
-
-            <button
-                onclick="selectPlan('Free')"
-            >
-                Current
-            </button>
-
-        </div>
-
-
-        <div class="plan">
-
-            <h3>
-                Plus
-            </h3>
-
-            <p>
-                ₹499 / month
-            </p>
-
-            <button
-                onclick="selectPlan('Plus')"
-            >
-                Upgrade
-            </button>
-
-        </div>
-
-
-        <div class="plan">
-
-            <h3>
-                Pro
-            </h3>
-
-            <p>
-                ₹999 / month
-            </p>
-
-            <button
-                onclick="selectPlan('Pro')"
-            >
-                Upgrade
-            </button>
-
-        </div>
-
+  <section id="chatbox" class="chatbox">
+    <div id="welcome" class="welcome">
+      <h1>How can I help you?</h1>
+      <p>Ask Nirale AI anything.</p>
     </div>
+  </section>
 
-</div>
+  <div id="plusMenu" class="plus-menu">
+    <button class="plus-item" onclick="document.getElementById('fileInput').click()">📎 Attach files</button>
+    <button class="plus-item" onclick="document.getElementById('cameraInput').click()">📷 Camera</button>
+    <button class="plus-item" onclick="document.getElementById('photoInput').click()">🖼️ Photos / Gallery</button>
+    <button class="plus-item" onclick="webSearch()">🌐 Web search</button>
+    <button class="plus-item" onclick="showInfo('Create image')">🎨 Create image</button>
+    <button class="plus-item" onclick="openMap()">📍 Map</button>
+  </div>
 
-
-<!-- ========================================================
-     ADMIN
-======================================================== -->
-
-<div
-    id="adminModal"
-    class="modal hidden"
->
-
-    <div class="modal-card">
-
-        <button
-            class="close-modal"
-            onclick="closeModals()"
-        >
-            ×
-        </button>
-
-        <h2>
-            👑 Admin Dashboard
-        </h2>
-
-        <div id="adminStats"></div>
-
-        <h3>
-            Users
-        </h3>
-
-        <div id="adminUsers"></div>
-
-        <h3>
-            Activity
-        </h3>
-
-        <div id="adminActivity"></div>
-
+  <footer class="footer">
+    <div class="composer">
+      <button class="round" onclick="togglePlus()" aria-label="Attach">＋</button>
+      <textarea id="messageInput" rows="1" placeholder="Message Nirale AI..." onkeydown="handleKey(event)"></textarea>
+      <button id="micBtn" class="round" onclick="voiceInput()" aria-label="Voice">🎙️</button>
+      <button class="round send" onclick="sendMessage()" aria-label="Send">➤</button>
     </div>
-
+    <input id="fileInput" type="file" hidden>
+    <input id="photoInput" type="file" accept="image/*" hidden>
+    <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden>
+  </footer>
+</main>
 </div>
 
+<div id="auth" class="auth">
+ <div class="auth-card">
+   <button class="close-auth" onclick="closeAuth()">×</button>
+   <h2 id="authTitle">Login to Nirale AI</h2>
+   <input id="authEmail" type="email" placeholder="Email">
+   <input id="authPassword" type="password" placeholder="Password">
+   <button class="auth-primary" onclick="submitAuth()">Continue</button>
+   <div id="authMessage" style="color:#b00020;margin-top:9px;font-size:13px"></div>
+   <div class="auth-switch" id="authSwitch">
+     Don't have an account? <a onclick="switchAuth('signup')">Create account</a>
+   </div>
+ </div>
+</div>
+
+<div id="accountPop" class="account-pop">
+  <button class="pop-btn" onclick="openAuth('login')">Login</button>
+  <button class="pop-btn" onclick="openAuth('signup')">Create account</button>
+  <button class="pop-btn" onclick="logout()">Logout</button>
+</div>
 
 <script>
-
-/* ============================================================
-   GLOBAL
-============================================================ */
-
 let currentChatId = null;
+let authMode = "login";
 
-let selectedImage = null;
+const sidebar = document.getElementById("sidebar");
+const overlay = document.getElementById("overlay");
+const chatbox = document.getElementById("chatbox");
+const input = document.getElementById("messageInput");
+const plusMenu = document.getElementById("plusMenu");
 
-let recognition = null;
-
-
-/* ============================================================
-   SIDEBAR
-============================================================ */
-
-function openSidebar() {
-
-    document
-        .getElementById("sidebar")
-        .classList
-        .add("open");
-
-    document
-        .getElementById("sidebarOverlay")
-        .classList
-        .add("open");
+function openSidebar(){
+  sidebar.classList.remove("closed");
+  sidebar.classList.add("open");
+  overlay.classList.add("open");
 }
-
-
-function closeSidebar() {
-
-    document
-        .getElementById("sidebar")
-        .classList
-        .remove("open");
-
-    document
-        .getElementById("sidebarOverlay")
-        .classList
-        .remove("open");
+function closeSidebar(){
+  sidebar.classList.remove("open");
+  overlay.classList.remove("open");
+  if(window.innerWidth > 700) sidebar.classList.add("closed");
 }
-
-
-function toggleMore() {
-
-    document
-        .getElementById("moreContent")
-        .classList
-        .toggle("open");
+function newChat(){
+  currentChatId = null;
+  chatbox.innerHTML = `<div id="welcome" class="welcome"><h1>How can I help you?</h1><p>Ask Nirale AI anything.</p></div>`;
+  closeSidebar();
+  input.focus();
 }
-
-
-/* ============================================================
-   AUTH UI
-============================================================ */
-
-function showLogin() {
-
-    document
-        .getElementById("loginForm")
-        .classList
-        .remove("hidden");
-
-    document
-        .getElementById("signupForm")
-        .classList
-        .add("hidden");
+function togglePlus(){
+  plusMenu.classList.toggle("open");
 }
-
-
-function showSignup() {
-
-    document
-        .getElementById("loginForm")
-        .classList
-        .add("hidden");
-
-    document
-        .getElementById("signupForm")
-        .classList
-        .remove("hidden");
+function showInfo(name){
+  plusMenu.classList.remove("open");
+  alert(name + " is ready for Nirale AI.");
 }
+function webSearch(){
+  const q = input.value.trim();
+  window.open("https://www.google.com/search?q="+encodeURIComponent(q || "Nirale AI"), "_blank");
+  plusMenu.classList.remove("open");
+}
+function openMap(){
+  const q = input.value.trim() || "Google Maps";
+  window.open("https://www.google.com/maps/search/"+encodeURIComponent(q), "_blank");
+  plusMenu.classList.remove("open");
+}
+function upgrade(){
+  alert("Upgrade plans: Free ₹0, Plus ₹499, Pro ₹999. Payment gateway can be connected separately.");
+}
+function toggleAccount(){
+  document.getElementById("accountPop").classList.toggle("open");
+}
+function openAuth(mode){
+  authMode = mode;
+  document.getElementById("auth").classList.add("open");
+  document.getElementById("accountPop").classList.remove("open");
+  switchAuth(mode);
+}
+function closeAuth(){
+  document.getElementById("auth").classList.remove("open");
+}
+function switchAuth(mode){
+  authMode = mode;
+  document.getElementById("authTitle").textContent =
+    mode === "login" ? "Login to Nirale AI" : "Create your Nirale AI account";
+  document.getElementById("authMessage").textContent = "";
+  document.getElementById("authSwitch").innerHTML =
+    mode === "login"
+      ? `Don't have an account? <a onclick="switchAuth('signup')">Create account</a>`
+      : `Already have an account? <a onclick="switchAuth('login')">Login</a>`;
+}
+async function submitAuth(){
+  const email = document.getElementById("authEmail").value.trim();
+  const password = document.getElementById("authPassword").value;
+  const out = document.getElementById("authMessage");
+  if(!email || !password){ out.textContent="Enter email and password."; return; }
 
+  const r = await fetch(authMode === "login" ? "/api/login" : "/api/signup", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({email,password})
+  });
+  const d = await r.json();
+  if(!d.ok){ out.textContent=d.error || "Something went wrong."; return; }
+  closeAuth();
+  await loadMe();
+  await loadRecents();
+}
+async function logout(){
+  await fetch("/api/logout",{method:"POST"});
+  document.getElementById("accountPop").classList.remove("open");
+  await loadMe();
+}
+async function loadMe(){
+  const d = await fetch("/api/me").then(r=>r.json());
+  const email = document.getElementById("accountEmail");
+  const plan = document.getElementById("accountPlan");
+  const avatar = document.getElementById("avatar");
+  if(d.logged_in){
+    email.textContent=d.email;
+    plan.textContent=d.plan;
+    avatar.textContent=(d.email[0]||"N").toUpperCase();
+  }else{
+    email.textContent="Guest";
+    plan.textContent="4 free questions";
+    avatar.textContent="G";
+  }
+}
+async function loadRecents(){
+  const box=document.getElementById("recents");
+  const d=await fetch("/api/chats").then(r=>r.json());
+  box.innerHTML="";
+  (d.chats||[]).forEach(c=>{
+    const row=document.createElement("div");
+    row.className="recent-chat";
+    row.dataset.title=c.title.toLowerCase();
+    row.innerHTML=`<span class="recent-title">${escapeHtml(c.title)}</span>`;
+    row.onclick=()=>loadChat(c.id);
+    box.appendChild(row);
+  });
+}
+async function loadChat(id){
+  const d=await fetch("/api/chats/"+id).then(r=>r.json());
+  if(!d.ok)return;
+  currentChatId=id;
+  chatbox.innerHTML="";
+  (d.messages||[]).forEach(m=>addMessage(m.role,m.content,false));
+  chatbox.scrollTop=chatbox.scrollHeight;
+  closeSidebar();
+}
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+function addMessage(role,text,scroll=true){
+  const row=document.createElement("div");
+  row.className="msg-row "+(role==="user"?"user":"assistant");
+  const msg=document.createElement("div");
+  msg.className="msg "+(role==="user"?"user":"assistant");
+  if(role==="user"){
+    msg.textContent=text;
+  }else{
+    msg.innerHTML=marked.parse(text);
+    msg.querySelectorAll("pre code").forEach(block=>{
+      try{hljs.highlightElement(block)}catch(e){}
+      const pre=block.parentElement;
+      pre.classList.add("code-wrap");
+      const b=document.createElement("button");
+      b.className="copy-code";
+      b.textContent="Copy";
+      b.onclick=()=>navigator.clipboard.writeText(block.innerText);
+      pre.appendChild(b);
+    });
+  }
+  row.appendChild(msg);
+  chatbox.appendChild(row);
+  if(scroll) chatbox.scrollTop=chatbox.scrollHeight;
+}
+function thinkingLanguage(text){
+  if(/[ಕ-ೞ]/.test(text)) return "ಯೋಚಿಸುತ್ತಿದೆ...";
+  if(/[अ-ह]/.test(text)) return "सोच रहा हूँ...";
+  if(/[అ-హ]/.test(text)) return "ఆలోచిస్తోంది...";
+  if(/[அ-ஹ]/.test(text)) return "யோசிக்கிறது...";
+  if(/[അ-ഹ]/.test(text)) return "ചിന്തിക്കുന്നു...";
+  return "Thinking...";
+}
+function handleKey(e){
+  if(e.key==="Enter" && !e.shiftKey){
+    e.preventDefault();
+    sendMessage();
+  }
+}
+async function sendMessage(){
+  const text=input.value.trim();
+  if(!text)return;
+  plusMenu.classList.remove("open");
+  input.value="";
+  input.style.height="auto";
 
-/* ============================================================
-   LOGIN
-============================================================ */
+  const welcome=document.getElementById("welcome");
+  if(welcome) welcome.remove();
 
-async function login() {
+  addMessage("user",text);
 
-    const email =
-        document
-            .getElementById("loginEmail")
-            .value
-            .trim();
+  const t=document.createElement("div");
+  t.className="thinking";
+  t.textContent=thinkingLanguage(text);
+  chatbox.appendChild(t);
+  chatbox.scrollTop=chatbox.scrollHeight;
 
-    const password =
-        document
-            .getElementById("loginPassword")
-            .value;
+  try{
+    const r=await fetch("/api/chat",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({message:text,chat_id:currentChatId})
+    });
+    const d=await r.json();
+    t.remove();
 
-    if (!email || !password) {
-
-        alert(
-            "Email ಮತ್ತು password enter madi."
-        );
-
-        return;
+    if(d.error==="LOGIN_REQUIRED"){
+      openAuth("login");
+      return;
+    }
+    if(!d.ok){
+      addMessage("assistant",d.error||"Something went wrong.");
+      return;
     }
 
+    currentChatId=d.chat_id||currentChatId;
+    addMessage("assistant",d.answer||"");
+    await loadRecents();
 
-    const res =
-        await fetch(
-            "/api/login",
-            {
-                method: "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body: JSON.stringify({
-                    email,
-                    password
-                })
-            }
-        );
-
-
-    const data =
-        await res.json();
-
-
-    if (!res.ok) {
-
-        alert(
-            data.detail ||
-            "Login failed."
-        );
-
-        return;
+    if(d.guest_count===4){
+      setTimeout(()=>openAuth("login"),400);
     }
-
-
-    await loadApp();
+  }catch(e){
+    t.remove();
+    addMessage("assistant","Connection error. Please try again.");
+  }
 }
-
-
-/* ============================================================
-   SIGNUP
-============================================================ */
-
-async function signup() {
-
-    const email =
-        document
-            .getElementById("signupEmail")
-            .value
-            .trim();
-
-    const password =
-        document
-            .getElementById("signupPassword")
-            .value;
-
-
-    if (!email || !password) {
-
-        alert(
-            "Email ಮತ್ತು password enter madi."
-        );
-
-        return;
-    }
-
-
-    const res =
-        await fetch(
-            "/api/signup",
-            {
-                method: "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body: JSON.stringify({
-                    email,
-                    password
-                })
-            }
-        );
-
-
-    const data =
-        await res.json();
-
-
-    if (!res.ok) {
-
-        alert(
-            data.detail ||
-            "Signup failed."
-        );
-
-        return;
-    }
-
-
-    await loadApp();
+function voiceInput(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){
+    alert("Voice input is not supported in this browser.");
+    return;
+  }
+  const rec=new SR();
+  rec.lang="kn-IN";
+  rec.interimResults=false;
+  rec.onstart=()=>document.getElementById("micBtn").textContent="🔴";
+  rec.onend=()=>document.getElementById("micBtn").textContent="🎙️";
+  rec.onerror=()=>document.getElementById("micBtn").textContent="🎙️";
+  rec.onresult=e=>{
+    input.value += (input.value?" ":"")+e.results[0][0].transcript;
+    input.focus();
+  };
+  rec.start();
 }
-
-
-/* ============================================================
-   LOAD APP
-============================================================ */
-
-async function loadApp() {
-
-    const res =
-        await fetch(
-            "/api/me"
-        );
-
-
-    const user =
-        await res.json();
-
-
-    /* GUEST */
-
-    if (!user.logged_in) {
-
-        document
-            .getElementById("authScreen")
-            .classList
-            .add("hidden");
-
-        document
-            .getElementById("app")
-            .classList
-            .remove("hidden");
-
-
-        document
-            .getElementById("sideEmail")
-            .textContent =
-            "Guest";
-
-
-        document
-            .getElementById("sidePlan")
-            .textContent =
-            "4 free questions";
-
-
-        document
-            .getElementById("avatar")
-            .textContent =
-            "G";
-
-
-        document
-            .getElementById("logoutBtn")
-            .classList
-            .add("hidden");
-
-
-        return;
-    }
-
-
-    /* LOGGED IN */
-
-    document
-        .getElementById("authScreen")
-        .classList
-        .add("hidden");
-
-
-    document
-        .getElementById("app")
-        .classList
-        .remove("hidden");
-
-
-    document
-        .getElementById("sideEmail")
-        .textContent =
-        user.email;
-
-
-    document
-        .getElementById("sidePlan")
-        .textContent =
-        user.plan;
-
-
-    document
-        .getElementById("accountEmail")
-        .textContent =
-        "Email: " +
-        user.email;
-
-
-    document
-        .getElementById("accountPlan")
-        .textContent =
-        "Plan: " +
-        user.plan;
-
-
-    document
-        .getElementById("avatar")
-        .textContent =
-        user.email
-            .charAt(0)
-            .toUpperCase();
-
-
-    document
-        .getElementById("logoutBtn")
-        .classList
-        .remove("hidden");
-
-
-    loadRecents();
-
-
-    const admin =
-        await fetch(
-            "/api/admin/stats"
-        );
-
-
-    if (admin.ok) {
-
-        const menu =
-            document.createElement(
-                "button"
-            );
-
-        menu.className =
-            "menu-item";
-
-        menu.innerHTML = `
-            👑
-            <span class="menu-text">
-                Admin Dashboard
-            </span>
-        `;
-
-        menu.onclick =
-            openAdmin;
-
-        document
-            .querySelector(".sidebar-menu")
-            .appendChild(menu);
-    }
-}
-
-
-/* ============================================================
-   LOGOUT
-============================================================ */
-
-async function logout() {
-
-    await fetch(
-        "/api/logout",
-        {
-            method: "POST"
-        }
-    );
-
-    location.reload();
-}
-
-
-/* ============================================================
-   NEW CHAT
-============================================================ */
-
-function newChat() {
-
-    currentChatId = null;
-
-    selectedImage = null;
-
-
-    document
-        .getElementById("chatbox")
-        .innerHTML = `
-            <div
-                id="welcome"
-                class="welcome"
-            >
-
-                <h1>
-                    How can I help you?
-                </h1>
-
-                <p>
-                    Ask Nirale AI anything.
-                </p>
-
-            </div>
-        `;
-
-
-    document
-        .getElementById("messageInput")
-        .focus();
-}
-
-
-/* ============================================================
-   PLUS
-============================================================ */
-
-function togglePlus() {
-
-    document
-        .getElementById("plusMenu")
-        .classList
-        .toggle("hidden");
-}
-
-
-function closePlus() {
-
-    document
-        .getElementById("plusMenu")
-        .classList
-        .add("hidden");
-}
-
-
-/* ============================================================
-   FILE
-============================================================ */
-
-function attachFile() {
-
-    closePlus();
-
-    document
-        .getElementById("fileInput")
-        .click();
-}
-
-
-function openCamera() {
-
-    closePlus();
-
-    document
-        .getElementById("cameraInput")
-        .click();
-}
-
-
-function openGallery() {
-
-    closePlus();
-
-    document
-        .getElementById("galleryInput")
-        .click();
-}
-
-
-function fileSelected(event) {
-
-    const file =
-        event.target.files[0];
-
-    if (!file) return;
-
-    addUserText(
-        "📎 " +
-        file.name
-    );
-}
-
-
-function imageSelected(event) {
-
-    const file =
-        event.target.files[0];
-
-    if (!file) return;
-
-
-    const reader =
-        new FileReader();
-
-
-    reader.onload =
-        function(e) {
-
-            selectedImage =
-                e.target.result;
-
-
-            const chat =
-                document
-                    .getElementById("chatbox");
-
-
-            const wrapper =
-                document
-                    .createElement("div");
-
-
-            wrapper.className =
-                "message user-message";
-
-
-            const img =
-                document
-                    .createElement("img");
-
-
-            img.src =
-                selectedImage;
-
-
-            img.style.maxWidth =
-                "300px";
-
-
-            img.style.maxHeight =
-                "300px";
-
-
-            img.style.borderRadius =
-                "15px";
-
-
-            wrapper.appendChild(
-                img
-            );
-
-
-            chat.appendChild(
-                wrapper
-            );
-
-
-            chat.scrollTop =
-                chat.scrollHeight;
-        };
-
-
-    reader.readAsDataURL(file);
-}
-
-
-/* ============================================================
-   WEB SEARCH
-============================================================ */
-
-function webSearch() {
-
-    closePlus();
-
-    const q =
-        document
-            .getElementById("messageInput")
-            .value
-            .trim();
-
-
-    window.open(
-        "https://www.google.com/search?q=" +
-        encodeURIComponent(
-            q || "Nirale AI"
-        ),
-        "_blank"
-    );
-}
-
-
-/* ============================================================
-   MAP
-============================================================ */
-
-function openMap() {
-
-    closePlus();
-
-    const q =
-        document
-            .getElementById("messageInput")
-            .value
-            .trim();
-
-
-    window.open(
-        "https://www.google.com/maps/search/" +
-        encodeURIComponent(
-            q || "India"
-        ),
-        "_blank"
-    );
-}
-
-
-/* ============================================================
-   IMAGE
-============================================================ */
-
-function createImage() {
-
-    closePlus();
-
-    addAssistant(
-        "🎨 Create image option selected. " +
-        "Actual image-generation service connect " +
-        "madida mele image generate madabahudu."
-    );
-}
-
-
-/* ============================================================
-   USER MESSAGE
-============================================================ */
-
-function addUserText(text) {
-
-    const welcome =
-        document.getElementById(
-            "welcome"
-        );
-
-    if (welcome)
-        welcome.remove();
-
-
-    const chat =
-        document.getElementById(
-            "chatbox"
-        );
-
-
-    const wrapper =
-        document.createElement(
-            "div"
-        );
-
-
-    wrapper.className =
-        "message user-message";
-
-
-    const bubble =
-        document.createElement(
-            "div"
-        );
-
-
-    bubble.className =
-        "user-bubble";
-
-
-    bubble.textContent =
-        text;
-
-
-    wrapper.appendChild(
-        bubble
-    );
-
-
-    chat.appendChild(
-        wrapper
-    );
-
-
-    chat.scrollTop =
-        chat.scrollHeight;
-}
-
-
-/* ============================================================
-   ASSISTANT MESSAGE
-============================================================ */
-
-function addAssistant(text) {
-
-    const welcome =
-        document.getElementById(
-            "welcome"
-        );
-
-    if (welcome)
-        welcome.remove();
-
-
-    const chat =
-        document.getElementById(
-            "chatbox"
-        );
-
-
-    const div =
-        document.createElement(
-            "div"
-        );
-
-
-    div.className =
-        "message assistant-message";
-
-
-    div.innerHTML =
-        marked.parse(text);
-
-
-    chat.appendChild(div);
-
-
-    formatCode(div);
-
-
-    chat.scrollTop =
-        chat.scrollHeight;
-}
-
-
-/* ============================================================
-   CODE
-============================================================ */
-
-function formatCode(container) {
-
-    container
-        .querySelectorAll("pre")
-        .forEach(pre => {
-
-            const code =
-                pre.querySelector(
-                    "code"
-                );
-
-
-            if (!code)
-                return;
-
-
-            try {
-                hljs.highlightElement(
-                    code
-                );
-            } catch(e) {}
-
-
-            const actions =
-                document.createElement(
-                    "div"
-                );
-
-
-            actions.className =
-                "code-actions";
-
-
-            const copy =
-                document.createElement(
-                    "button"
-                );
-
-
-            copy.textContent =
-                "Copy";
-
-
-            copy.onclick =
-                async () => {
-
-                    await navigator
-                        .clipboard
-                        .writeText(
-                            code.innerText
-                        );
-
-                    copy.textContent =
-                        "Copied";
-
-                    setTimeout(
-                        () => {
-                            copy.textContent =
-                                "Copy";
-                        },
-                        1000
-                    );
-                };
-
-
-            const download =
-                document.createElement(
-                    "button"
-                );
-
-
-            download.textContent =
-                "Download";
-
-
-            download.onclick =
-                () => {
-
-                    const blob =
-                        new Blob(
-                            [code.innerText],
-                            {
-                                type:
-                                    "text/plain"
-                            }
-                        );
-
-
-                    const url =
-                        URL.createObjectURL(
-                            blob
-                        );
-
-
-                    const a =
-                        document.createElement(
-                            "a"
-                        );
-
-
-                    a.href =
-                        url;
-
-                    a.download =
-                        "nirale-code.txt";
-
-                    a.click();
-
-
-                    URL.revokeObjectURL(
-                        url
-                    );
-                };
-
-
-            actions.appendChild(
-                copy
-            );
-
-            actions.appendChild(
-                download
-            );
-
-            pre.appendChild(
-                actions
-            );
-
-        });
-}
-
-
-/* ============================================================
-   SEND
-============================================================ */
-
-async function sendMessage() {
-
-    const input =
-        document.getElementById(
-            "messageInput"
-        );
-
-
-    const message =
-        input.value.trim();
-
-
-    if (
-        !message &&
-        !selectedImage
-    ) {
-        return;
-    }
-
-
-    if (message) {
-        addUserText(message);
-    }
-
-
-    input.value = "";
-
-
-    const chat =
-        document.getElementById(
-            "chatbox"
-        );
-
-
-    const thinking =
-        document.createElement(
-            "div"
-        );
-
-
-    thinking.className =
-        "thinking";
-
-
-    thinking.textContent =
-        thinking_text_client(
-            message
-        );
-
-
-    chat.appendChild(
-        thinking
-    );
-
-
-    chat.scrollTop =
-        chat.scrollHeight;
-
-
-    try {
-
-        const res =
-            await fetch(
-                "/api/chat",
-                {
-                    method: "POST",
-
-                    headers: {
-                        "Content-Type":
-                            "application/json"
-                    },
-
-                    body: JSON.stringify({
-                        message:
-                            message,
-
-                        chat_id:
-                            currentChatId,
-
-                        image_data:
-                            selectedImage
-                    })
-                }
-            );
-
-
-        const data =
-            await res.json();
-
-
-        thinking.remove();
-
-
-        if (
-            data.detail ===
-            "LOGIN_REQUIRED"
-        ) {
-
-            showLoginRequired();
-
-            return;
-        }
-
-
-        if (!res.ok) {
-
-            addAssistant(
-                "❌ " +
-                (
-                    data.detail ||
-                    "Something went wrong."
-                )
-            );
-
-            return;
-        }
-
-
-        if (data.chat_id) {
-
-            currentChatId =
-                data.chat_id;
-        }
-
-
-        selectedImage =
-            null;
-
-
-        addAssistant(
-            data.reply
-        );
-
-
-        if (
-            data.guest &&
-            data.guest_count >= 4
-        ) {
-
-            setTimeout(
-                () => {
-                    showLoginRequired();
-                },
-                900
-            );
-        }
-
-
-        loadRecents();
-
-    } catch(error) {
-
-        thinking.remove();
-
-        addAssistant(
-            "❌ Server connection problem."
-        );
-    }
-}
-
-
-/* ============================================================
-   THINKING LANGUAGE
-============================================================ */
-
-function thinking_text_client(text) {
-
-    if (
-        /[\u0C80-\u0CFF]/.test(text)
-    ) {
-        return "ಯೋಚಿಸುತ್ತಿದೆ...";
-    }
-
-
-    if (
-        /[\u0900-\u097F]/.test(text)
-    ) {
-        return "सोच रहा हूँ...";
-    }
-
-
-    if (
-        /[\u0C00-\u0C7F]/.test(text)
-    ) {
-        return "ఆలోచిస్తోంది...";
-    }
-
-
-    if (
-        /[\u0B80-\u0BFF]/.test(text)
-    ) {
-        return "யோசிக்கிறது...";
-    }
-
-
-    if (
-        /[\u0D00-\u0D7F]/.test(text)
-    ) {
-        return "ചിന്തിക്കുന്നു...";
-    }
-
-
-    return "Thinking...";
-}
-
-
-/* ============================================================
-   LOGIN REQUIRED
-============================================================ */
-
-function showLoginRequired() {
-
-    document
-        .getElementById("authScreen")
-        .classList
-        .remove("hidden");
-
-
-    document
-        .getElementById("app")
-        .classList
-        .add("hidden");
-
-
-    showLogin();
-}
-
-
-/* ============================================================
-   ENTER
-============================================================ */
-
-function handleKey(event) {
-
-    if (
-        event.key === "Enter" &&
-        !event.shiftKey
-    ) {
-
-        event.preventDefault();
-
-        sendMessage();
-    }
-}
-
-
-/* ============================================================
-   VOICE
-============================================================ */
-
-function startVoice() {
-
-    const SpeechRecognition =
-        window.SpeechRecognition ||
-        window.webkitSpeechRecognition;
-
-
-    if (!SpeechRecognition) {
-
-        alert(
-            "ಈ browser voice input support ಮಾಡಲ್ಲ."
-        );
-
-        return;
-    }
-
-
-    if (recognition) {
-
-        recognition.stop();
-
-        recognition = null;
-
-        document
-            .getElementById("micBtn")
-            .classList
-            .remove(
-                "mic-listening"
-            );
-
-        return;
-    }
-
-
-    recognition =
-        new SpeechRecognition();
-
-
-    recognition.lang =
-        "kn-IN";
-
-
-    recognition.continuous =
-        false;
-
-
-    recognition.interimResults =
-        true;
-
-
-    const mic =
-        document.getElementById(
-            "micBtn"
-        );
-
-
-    mic.classList.add(
-        "mic-listening"
-    );
-
-
-    recognition.onresult =
-        function(event) {
-
-            let text = "";
-
-
-            for (
-                let i =
-                    event.resultIndex;
-
-                i <
-                    event.results.length;
-
-                i++
-            ) {
-
-                text +=
-                    event.results[i][0]
-                        .transcript;
-            }
-
-
-            document
-                .getElementById(
-                    "messageInput"
-                )
-                .value =
-                text;
-        };
-
-
-    recognition.onerror =
-        function() {
-
-            mic.classList.remove(
-                "mic-listening"
-            );
-
-            recognition = null;
-        };
-
-
-    recognition.onend =
-        function() {
-
-            mic.classList.remove(
-                "mic-listening"
-            );
-
-            recognition = null;
-        };
-
-
-    recognition.start();
-}
-
-
-/* ============================================================
-   RECENTS
-============================================================ */
-
-async function loadRecents() {
-
-    const res =
-        await fetch(
-            "/api/chats"
-        );
-
-
-    if (!res.ok)
-        return;
-
-
-    const data =
-        await res.json();
-
-
-    const box =
-        document.getElementById(
-            "recents"
-        );
-
-
-    box.innerHTML = "";
-
-
-    data.chats.forEach(
-        chat => {
-
-            const row =
-                document.createElement(
-                    "div"
-                );
-
-
-            row.className =
-                "recent-row";
-
-
-            const title =
-                document.createElement(
-                    "button"
-                );
-
-
-            title.className =
-                "recent-title";
-
-
-            title.textContent =
-                chat.title;
-
-
-            title.onclick =
-                () => openChat(
-                    chat.id
-                );
-
-
-            const options =
-                document.createElement(
-                    "button"
-                );
-
-
-            options.className =
-                "recent-options";
-
-
-            options.textContent =
-                "•••";
-
-
-            options.onclick =
-                (event) => {
-
-                    event.stopPropagation();
-
-                    if (
-                        confirm(
-                            "Delete this chat?"
-                        )
-                    ) {
-
-                        deleteChat(
-                            chat.id
-                        );
-                    }
-                };
-
-
-            row.appendChild(
-                title
-            );
-
-            row.appendChild(
-                options
-            );
-
-
-            box.appendChild(
-                row
-            );
-        }
-    );
-}
-
-
-/* ============================================================
-   OPEN CHAT
-============================================================ */
-
-async function openChat(id) {
-
-    const res =
-        await fetch(
-            "/api/chats/" +
-            id
-        );
-
-
-    if (!res.ok)
-        return;
-
-
-    const data =
-        await res.json();
-
-
-    currentChatId =
-        id;
-
-
-    const chatbox =
-        document.getElementById(
-            "chatbox"
-        );
-
-
-    chatbox.innerHTML = "";
-
-
-    data.messages.forEach(
-        message => {
-
-            if (
-                message.role ===
-                "user"
-            ) {
-
-                addUserText(
-                    message.content
-                );
-
-            } else {
-
-                addAssistant(
-                    message.content
-                );
-            }
-        }
-    );
-
-
-    chatbox.scrollTop =
-        chatbox.scrollHeight;
-
-
-    closeSidebar();
-}
-
-
-/* ============================================================
-   DELETE CHAT
-============================================================ */
-
-async function deleteChat(id) {
-
-    await fetch(
-        "/api/chats/" +
-        id,
-        {
-            method: "DELETE"
-        }
-    );
-
-
-    if (
-        currentChatId === id
-    ) {
-        newChat();
-    }
-
-
-    loadRecents();
-}
-
-
-/* ============================================================
-   SEARCH
-============================================================ */
-
-async function searchChats() {
-
-    const query =
-        prompt(
-            "Search chats"
-        );
-
-
-    if (!query)
-        return;
-
-
-    const res =
-        await fetch(
-            "/api/chats"
-        );
-
-
-    if (!res.ok)
-        return;
-
-
-    const data =
-        await res.json();
-
-
-    const box =
-        document.getElementById(
-            "recents"
-        );
-
-
-    box.innerHTML = "";
-
-
-    data.chats
-        .filter(
-            chat =>
-                chat.title
-                    .toLowerCase()
-                    .includes(
-                        query.toLowerCase()
-                    )
-        )
-        .forEach(
-            chat => {
-
-                const row =
-                    document.createElement(
-                        "div"
-                    );
-
-
-                row.className =
-                    "recent-row";
-
-
-                row.innerHTML = `
-                    <button
-                        class="recent-title"
-                        onclick="openChat(${chat.id})"
-                    >
-                        ${escapeHtml(
-                            chat.title
-                        )}
-                    </button>
-                `;
-
-
-                box.appendChild(
-                    row
-                );
-            }
-        );
-}
-
-
-/* ============================================================
-   ACCOUNT
-============================================================ */
-
-function openAccount() {
-
-    document
-        .getElementById(
-            "accountModal"
-        )
-        .classList
-        .remove("hidden");
-}
-
-
-/* ============================================================
-   UPGRADE
-============================================================ */
-
-function openUpgrade() {
-
-    document
-        .getElementById(
-            "upgradeModal"
-        )
-        .classList
-        .remove("hidden");
-}
-
-
-/* ============================================================
-   MODALS
-============================================================ */
-
-function closeModals() {
-
-    document
-        .querySelectorAll(
-            ".modal"
-        )
-        .forEach(
-            x =>
-                x.classList
-                    .add("hidden")
-        );
-}
-
-
-/* ============================================================
-   PLAN
-============================================================ */
-
-async function selectPlan(plan) {
-
-    const res =
-        await fetch(
-            "/api/upgrade",
-            {
-                method: "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body: JSON.stringify({
-                    plan: plan
-                })
-            }
-        );
-
-
-    const data =
-        await res.json();
-
-
-    if (
-        data.payment_required
-    ) {
-
-        alert(
-            "Paid plan activate madoke payment gateway connect madbeku."
-        );
-
-        return;
-    }
-
-
-    if (!res.ok) {
-
-        alert(
-            data.detail ||
-            "Plan update failed."
-        );
-
-        return;
-    }
-
-
-    closeModals();
-
-    loadApp();
-}
-
-
-/* ============================================================
-   ADMIN
-============================================================ */
-
-async function openAdmin() {
-
-    const statsRes =
-        await fetch(
-            "/api/admin/stats"
-        );
-
-
-    if (!statsRes.ok) {
-
-        alert(
-            "Admin access denied."
-        );
-
-        return;
-    }
-
-
-    const stats =
-        await statsRes.json();
-
-
-    document
-        .getElementById(
-            "adminStats"
-        )
-        .innerHTML = `
-            <p>
-                Users: ${stats.users}
-            </p>
-
-            <p>
-                Chats: ${stats.chats}
-            </p>
-
-            <p>
-                Messages: ${stats.messages}
-            </p>
-        `;
-
-
-    const usersRes =
-        await fetch(
-            "/api/admin/users"
-        );
-
-
-    const users =
-        await usersRes.json();
-
-
-    document
-        .getElementById(
-            "adminUsers"
-        )
-        .innerHTML =
-        users.users
-            .map(
-                user => `
-                    <div
-                        style="
-                            padding:10px;
-                            border-bottom:
-                                1px solid #333;
-                        "
-                    >
-                        <b>
-                            ${escapeHtml(
-                                user.email
-                            )}
-                        </b>
-
-                        <br>
-
-                        Plan:
-                        ${escapeHtml(
-                            user.plan
-                        )}
-
-                        <br>
-
-                        Last active:
-                        ${escapeHtml(
-                            user.last_active ||
-                            ""
-                        )}
-                    </div>
-                `
-            )
-            .join("");
-
-
-    const activityRes =
-        await fetch(
-            "/api/admin/activity"
-        );
-
-
-    const activity =
-        await activityRes.json();
-
-
-    document
-        .getElementById(
-            "adminActivity"
-        )
-        .innerHTML =
-        activity.activity
-            .map(
-                item => `
-                    <div
-                        style="
-                            padding:10px;
-                            border-bottom:
-                                1px solid #333;
-                        "
-                    >
-                        <b>
-                            ${escapeHtml(
-                                item.email
-                            )}
-                        </b>
-
-                        <br>
-
-                        ${escapeHtml(
-                            item.message
-                        )}
-
-                        <br>
-
-                        <small>
-                            ${escapeHtml(
-                                item.created_at
-                            )}
-                        </small>
-                    </div>
-                `
-            )
-            .join("");
-
-
-    document
-        .getElementById(
-            "adminModal"
-        )
-        .classList
-        .remove("hidden");
-}
-
-
-/* ============================================================
-   OTHER SIDEBAR OPTIONS
-============================================================ */
-
-function openLibrary() {
-
-    alert(
-        "Library"
-    );
-}
-
-
-function openProjects() {
-
-    alert(
-        "Projects"
-    );
-}
-
-
-function openScheduled() {
-
-    alert(
-        "Scheduled"
-    );
-}
-
-
-function openPlugins() {
-
-    alert(
-        "Plugins"
-    );
-}
-
-
-function openCodex() {
-
-    alert(
-        "Codex"
-    );
-}
-
-
-function openSettings() {
-
-    alert(
-        "Settings"
-    );
-}
-
-
-function openHelp() {
-
-    alert(
-        "Help"
-    );
-}
-
-
-function recentOptions() {
-
-    alert(
-        "Recent chat options"
-    );
-}
-
-
-/* ============================================================
-   ESCAPE
-============================================================ */
-
-function escapeHtml(text) {
-
-    const div =
-        document.createElement(
-            "div"
-        );
-
-    div.textContent =
-        text || "";
-
-    return div.innerHTML;
-}
-
-
-/* ============================================================
-   START
-============================================================ */
-
-loadApp();
-
+document.getElementById("chatSearchInput").addEventListener("input",function(){
+  const q=this.value.toLowerCase().trim();
+  document.querySelectorAll(".recent-chat").forEach(x=>{
+    x.style.display=(!q || x.dataset.title.includes(q))?"flex":"none";
+  });
+});
+document.getElementById("messageInput").addEventListener("input",function(){
+  this.style.height="auto";
+  this.style.height=Math.min(this.scrollHeight,150)+"px";
+});
+document.addEventListener("click",function(e){
+  if(!e.target.closest(".plus-menu") && !e.target.closest(".round")){
+    plusMenu.classList.remove("open");
+  }
+});
+window.addEventListener("resize",()=>{
+  if(window.innerWidth>700){
+    overlay.classList.remove("open");
+    sidebar.classList.remove("open");
+  }
+});
+loadMe();
+loadRecents();
 </script>
-
 </body>
+</html>"""
 
-</html>
-"""
-
-
-# ============================================================
-# ROOT
-# ============================================================
-
-@app.get(
-    "/",
-    response_class=HTMLResponse
-)
-async def root():
-
-    return HTMLResponse(
-        HTML
-    )
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return HTML
