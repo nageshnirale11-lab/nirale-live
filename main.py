@@ -1,7 +1,5 @@
 import os
 import re
-import json
-import time
 import base64
 import hashlib
 import secrets
@@ -10,15 +8,15 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 import google.generativeai as genai
 
 
-# =========================================================
+# ============================================================
 # CONFIG
-# =========================================================
+# ============================================================
 
 APP_NAME = "Nirale AI"
 DB_FILE = "nirale.db"
@@ -31,22 +29,21 @@ OWNER_EMAIL = os.getenv("OWNER_EMAIL", "").strip().lower()
 if API_KEY:
     genai.configure(api_key=API_KEY)
 
-
 app = FastAPI(title=APP_NAME)
 
 
-# =========================================================
+# ============================================================
 # DATABASE
-# =========================================================
+# ============================================================
 
-def db():
+def get_db():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
-    conn = db()
+    conn = get_db()
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -105,16 +102,17 @@ def init_db():
 init_db()
 
 
-# =========================================================
-# PASSWORD SECURITY
-# =========================================================
+# ============================================================
+# PASSWORD HASHING
+# ============================================================
 
 def hash_password(password: str, salt: Optional[str] = None):
+
     if salt is None:
         salt = secrets.token_hex(16)
 
     hashed = hashlib.scrypt(
-        password.encode(),
+        password.encode("utf-8"),
         salt=bytes.fromhex(salt),
         n=16384,
         r=8,
@@ -126,47 +124,61 @@ def hash_password(password: str, salt: Optional[str] = None):
 
 
 def verify_password(password: str, password_hash: str, salt: str):
-    hashed, _ = hash_password(password, salt)
-    return secrets.compare_digest(hashed, password_hash)
+
+    new_hash, _ = hash_password(password, salt)
+
+    return secrets.compare_digest(
+        new_hash,
+        password_hash
+    )
 
 
-# =========================================================
+# ============================================================
 # SESSION
-# =========================================================
+# ============================================================
 
-def current_user(request: Request):
+def get_current_user(request: Request):
+
     token = request.cookies.get("nirale_session")
 
     if not token:
         return None
 
-    conn = db()
+    conn = get_db()
 
-    row = conn.execute("""
+    user = conn.execute("""
         SELECT users.*
         FROM users
-        JOIN sessions ON sessions.user_id = users.id
+        INNER JOIN sessions
+        ON sessions.user_id = users.id
         WHERE sessions.token = ?
     """, (token,)).fetchone()
 
     conn.close()
 
-    return row
+    return user
 
 
-def update_last_active(user_id: int):
-    conn = db()
-    conn.execute(
-        "UPDATE users SET last_active=? WHERE id=?",
-        (datetime.now().isoformat(), user_id)
-    )
+def update_last_active(user_id):
+
+    conn = get_db()
+
+    conn.execute("""
+        UPDATE users
+        SET last_active = ?
+        WHERE id = ?
+    """, (
+        datetime.now().isoformat(),
+        user_id
+    ))
+
     conn.commit()
     conn.close()
 
 
-# =========================================================
-# MODELS
-# =========================================================
+# ============================================================
+# REQUEST MODELS
+# ============================================================
 
 class SignupRequest(BaseModel):
     email: str
@@ -188,69 +200,90 @@ class UpgradeRequest(BaseModel):
     plan: str
 
 
-# =========================================================
+# ============================================================
 # CREATOR
-# =========================================================
+# ============================================================
 
-def is_creator_question(text: str):
-    t = text.lower().strip()
+def is_creator_question(message: str):
 
-    words = [
+    text = message.lower().strip()
+
+    keywords = [
         "who created you",
         "who made you",
         "who is your creator",
         "who developed you",
         "who built you",
         "who owns you",
-        "who is owner",
-        "ಯಾರು ನಿನ್ನನ್ನು ರಚಿಸಿದ್ದಾರೆ",
-        "ನಿನ್ನನ್ನು ಯಾರು ರಚಿಸಿದ್ದಾರೆ",
+        "creator yaaru",
+        "creator yaru",
+        "ninna creator yaaru",
+        "ninna creator yaru",
+        "ninnannu yaaru madidaru",
+        "ninnannu yaaru madidru",
+        "ninnannu yaaru rachisidaru",
         "ನಿನ್ನ creator ಯಾರು",
+        "ನಿನ್ನನ್ನು ಯಾರು ರಚಿಸಿದ್ದಾರೆ",
         "ನಿನ್ನನ್ನು ಯಾರು ಮಾಡಿದರು",
+        "ನಿನ್ನನ್ನು ಯಾರು ಅಭಿವೃದ್ಧಿಪಡಿಸಿದರು",
         "ನಿಮ್ಮ creator ಯಾರು"
     ]
 
-    return any(x in t for x in words)
+    return any(word in text for word in keywords)
 
 
 CREATOR_REPLY = "ನನ್ನನ್ನು Nagesh Nirale ಅವರು ರಚಿಸಿದ್ದಾರೆ."
 
 
-# =========================================================
+# ============================================================
 # GEMINI
-# =========================================================
+# ============================================================
 
 SYSTEM_PROMPT = """
 You are Nirale AI.
 
-You are a helpful multilingual AI assistant.
+You are a helpful, intelligent and friendly multilingual AI assistant.
 
-Answer naturally in the language used by the user.
-You can understand and answer in:
-Kannada, English, Hindi, Telugu, Tamil, Malayalam,
-Marathi, Bengali, Gujarati, Punjabi, Urdu and other
-commonly supported languages.
+Support the user's language naturally.
 
-Important:
-- Give accurate and useful answers.
-- If the user asks for code, provide working code.
-- Explain code clearly when useful.
-- Preserve the user's requested programming language.
-- Use Markdown.
-- Use fenced code blocks for code.
-- Do not claim that an action was completed when it was not.
-- Never reveal passwords, API keys, session tokens or secrets.
+You can answer in:
+Kannada,
+English,
+Hindi,
+Telugu,
+Tamil,
+Malayalam,
+Marathi,
+Bengali,
+Gujarati,
+Punjabi,
+Urdu,
+and other languages supported by the AI model.
+
+Rules:
+
+1. Answer the user's actual question.
+2. Do not unnecessarily ask the user to login.
+3. Give useful and clear answers.
+4. If the user asks for programming code, provide working code.
+5. Use Markdown when useful.
+6. Put programming code inside fenced code blocks.
+7. Do not expose API keys, passwords or secret tokens.
+8. Do not pretend that an action was completed when it was not.
 """
 
 
-def generate_ai_reply(message: str, image_data: Optional[str] = None):
+def generate_ai_reply(
+    message: str,
+    image_data: Optional[str] = None
+):
 
     if is_creator_question(message):
         return CREATOR_REPLY
 
     if not API_KEY:
         raise RuntimeError(
-            "GOOGLE_API_KEY or GEMINI_API_KEY is not configured."
+            "GOOGLE_API_KEY or GEMINI_API_KEY is not configured in the server."
         )
 
     model = genai.GenerativeModel(
@@ -261,15 +294,17 @@ def generate_ai_reply(message: str, image_data: Optional[str] = None):
     contents = [message]
 
     if image_data:
+
         try:
+
             if "," in image_data:
                 image_data = image_data.split(",", 1)[1]
 
-            raw = base64.b64decode(image_data)
+            image_bytes = base64.b64decode(image_data)
 
             contents.append({
                 "mime_type": "image/jpeg",
-                "data": raw
+                "data": image_bytes
             })
 
         except Exception:
@@ -277,15 +312,34 @@ def generate_ai_reply(message: str, image_data: Optional[str] = None):
 
     response = model.generate_content(contents)
 
-    if not response or not getattr(response, "text", None):
-        return "Sorry, nanage answer generate madakke agalilla."
+    text = getattr(response, "text", None)
 
-    return response.text
+    if not text:
+        return "ಕ್ಷಮಿಸಿ, ಈಗ answer generate ಆಗಲಿಲ್ಲ."
+
+    return text
 
 
-# =========================================================
-# AUTH API
-# =========================================================
+# ============================================================
+# GUEST QUESTION COUNTER
+# ============================================================
+
+def get_guest_count(request: Request):
+
+    value = request.cookies.get(
+        "nirale_guest_count",
+        "0"
+    )
+
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+
+# ============================================================
+# SIGNUP
+# ============================================================
 
 @app.post("/api/signup")
 async def signup(data: SignupRequest):
@@ -293,8 +347,14 @@ async def signup(data: SignupRequest):
     email = data.email.strip().lower()
     password = data.password
 
-    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
-        raise HTTPException(400, "Valid email address enter madi.")
+    if not re.match(
+        r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+        email
+    ):
+        raise HTTPException(
+            400,
+            "Valid email address enter madi."
+        )
 
     if len(password) < 6:
         raise HTTPException(
@@ -304,12 +364,20 @@ async def signup(data: SignupRequest):
 
     password_hash, salt = hash_password(password)
 
-    conn = db()
+    conn = get_db()
 
     try:
+
         cur = conn.execute("""
             INSERT INTO users
-            (email, password_hash, salt, plan, created_at, last_active)
+            (
+                email,
+                password_hash,
+                salt,
+                plan,
+                created_at,
+                last_active
+            )
             VALUES (?, ?, ?, 'Free', ?, ?)
         """, (
             email,
@@ -320,10 +388,16 @@ async def signup(data: SignupRequest):
         ))
 
         user_id = cur.lastrowid
+
         token = secrets.token_urlsafe(48)
 
         conn.execute("""
-            INSERT INTO sessions(token, user_id, created_at)
+            INSERT INTO sessions
+            (
+                token,
+                user_id,
+                created_at
+            )
             VALUES (?, ?, ?)
         """, (
             token,
@@ -334,7 +408,9 @@ async def signup(data: SignupRequest):
         conn.commit()
 
     except sqlite3.IntegrityError:
+
         conn.close()
+
         raise HTTPException(
             400,
             "ಈ email ಈಗಾಗಲೇ registered ಆಗಿದೆ."
@@ -342,43 +418,48 @@ async def signup(data: SignupRequest):
 
     conn.close()
 
-    response = {
+    response = JSONResponse({
         "ok": True,
-        "message": "Account created successfully.",
         "email": email
-    }
+    })
 
-    from fastapi.responses import JSONResponse
-
-    r = JSONResponse(response)
-
-    r.set_cookie(
-        "nirale_session",
-        token,
+    response.set_cookie(
+        key="nirale_session",
+        value=token,
         httponly=True,
         samesite="lax",
         secure=False,
         max_age=60 * 60 * 24 * 30
     )
 
-    return r
+    response.delete_cookie(
+        "nirale_guest_count"
+    )
 
+    return response
+
+
+# ============================================================
+# LOGIN
+# ============================================================
 
 @app.post("/api/login")
 async def login(data: LoginRequest):
 
     email = data.email.strip().lower()
 
-    conn = db()
+    conn = get_db()
 
-    user = conn.execute(
-        "SELECT * FROM users WHERE email=?",
-        (email,)
-    ).fetchone()
+    user = conn.execute("""
+        SELECT *
+        FROM users
+        WHERE email = ?
+    """, (email,)).fetchone()
 
     conn.close()
 
     if not user:
+
         raise HTTPException(
             401,
             "Email ಅಥವಾ password ತಪ್ಪಾಗಿದೆ."
@@ -389,6 +470,7 @@ async def login(data: LoginRequest):
         user["password_hash"],
         user["salt"]
     ):
+
         raise HTTPException(
             401,
             "Email ಅಥವಾ password ತಪ್ಪಾಗಿದೆ."
@@ -396,10 +478,15 @@ async def login(data: LoginRequest):
 
     token = secrets.token_urlsafe(48)
 
-    conn = db()
+    conn = get_db()
 
     conn.execute("""
-        INSERT INTO sessions(token, user_id, created_at)
+        INSERT INTO sessions
+        (
+            token,
+            user_id,
+            created_at
+        )
         VALUES (?, ?, ?)
     """, (
         token,
@@ -407,67 +494,92 @@ async def login(data: LoginRequest):
         datetime.now().isoformat()
     ))
 
-    conn.execute(
-        "UPDATE users SET last_active=? WHERE id=?",
-        (datetime.now().isoformat(), user["id"])
-    )
+    conn.execute("""
+        UPDATE users
+        SET last_active = ?
+        WHERE id = ?
+    """, (
+        datetime.now().isoformat(),
+        user["id"]
+    ))
 
     conn.commit()
     conn.close()
 
-    from fastapi.responses import JSONResponse
-
-    r = JSONResponse({
+    response = JSONResponse({
         "ok": True,
         "email": email,
         "plan": user["plan"]
     })
 
-    r.set_cookie(
-        "nirale_session",
-        token,
+    response.set_cookie(
+        key="nirale_session",
+        value=token,
         httponly=True,
         samesite="lax",
         secure=False,
         max_age=60 * 60 * 24 * 30
     )
 
-    return r
+    response.delete_cookie(
+        "nirale_guest_count"
+    )
 
+    return response
+
+
+# ============================================================
+# LOGOUT
+# ============================================================
 
 @app.post("/api/logout")
 async def logout(request: Request):
 
-    token = request.cookies.get("nirale_session")
+    token = request.cookies.get(
+        "nirale_session"
+    )
 
     if token:
-        conn = db()
+
+        conn = get_db()
+
         conn.execute(
-            "DELETE FROM sessions WHERE token=?",
+            "DELETE FROM sessions WHERE token = ?",
             (token,)
         )
+
         conn.commit()
         conn.close()
 
-    from fastapi.responses import JSONResponse
+    response = JSONResponse({
+        "ok": True
+    })
 
-    r = JSONResponse({"ok": True})
-    r.delete_cookie("nirale_session")
+    response.delete_cookie(
+        "nirale_session"
+    )
 
-    return r
+    return response
 
+
+# ============================================================
+# CURRENT USER
+# ============================================================
 
 @app.get("/api/me")
 async def me(request: Request):
 
-    user = current_user(request)
+    user = get_current_user(request)
 
     if not user:
+
         return {
             "logged_in": False
         }
 
-    update_last_active(user["id"])
+    update_last_active(
+        user["id"]
+    )
 
     return {
         "logged_in": True,
@@ -479,48 +591,114 @@ async def me(request: Request):
     }
 
 
-# =========================================================
-# CHAT API
-# =========================================================
+# ============================================================
+# CHAT
+# ============================================================
 
 @app.post("/api/chat")
-async def chat(request: Request, data: ChatRequest):
-
-    user = current_user(request)
-
-    if not user:
-        raise HTTPException(
-            401,
-            "Login madi."
-        )
+async def chat(
+    request: Request,
+    data: ChatRequest
+):
 
     message = data.message.strip()
 
-    if not message:
+    if not message and not data.image_data:
+
         raise HTTPException(
             400,
             "Message empty ide."
         )
 
-    update_last_active(user["id"])
+    user = get_current_user(request)
 
-    conn = db()
+    # ========================================================
+    # GUEST MODE
+    # First 4 questions are allowed without login.
+    # ========================================================
+
+    if not user:
+
+        guest_count = get_guest_count(
+            request
+        )
+
+        if guest_count >= 4:
+
+            raise HTTPException(
+                status_code=401,
+                detail="FREE_LOGIN_REQUIRED"
+            )
+
+        try:
+
+            reply = generate_ai_reply(
+                message,
+                data.image_data
+            )
+
+        except Exception as e:
+
+            raise HTTPException(
+                500,
+                f"Gemini error: {str(e)}"
+            )
+
+        new_count = guest_count + 1
+
+        response = JSONResponse({
+            "ok": True,
+            "guest": True,
+            "guest_count": new_count,
+            "remaining": max(
+                0,
+                4 - new_count
+            ),
+            "login_required_after": (
+                new_count >= 4
+            ),
+            "reply": reply
+        })
+
+        response.set_cookie(
+            key="nirale_guest_count",
+            value=str(new_count),
+            httponly=True,
+            samesite="lax",
+            secure=False,
+            max_age=60 * 60 * 24
+        )
+
+        return response
+
+    # ========================================================
+    # LOGGED IN MODE
+    # ========================================================
+
+    update_last_active(
+        user["id"]
+    )
+
+    conn = get_db()
 
     chat_id = data.chat_id
 
     if chat_id:
 
-        chat = conn.execute("""
+        existing_chat = conn.execute("""
             SELECT *
             FROM chats
-            WHERE id=? AND user_id=?
+            WHERE id = ?
+            AND user_id = ?
         """, (
             chat_id,
             user["id"]
         )).fetchone()
 
-        if not chat:
+        if not existing_chat:
+
             conn.close()
+
             raise HTTPException(
                 404,
                 "Chat not found."
@@ -528,11 +706,20 @@ async def chat(request: Request, data: ChatRequest):
 
     else:
 
-        title = message[:60]
+        title = (
+            message[:60]
+            if message
+            else "Image Chat"
+        )
 
         cur = conn.execute("""
             INSERT INTO chats
-            (user_id, title, created_at, updated_at)
+            (
+                user_id,
+                title,
+                created_at,
+                updated_at
+            )
             VALUES (?, ?, ?, ?)
         """, (
             user["id"],
@@ -545,22 +732,32 @@ async def chat(request: Request, data: ChatRequest):
 
     conn.execute("""
         INSERT INTO messages
-        (chat_id, role, content, created_at)
+        (
+            chat_id,
+            role,
+            content,
+            created_at
+        )
         VALUES (?, 'user', ?, ?)
     """, (
         chat_id,
-        message,
+        message or "[Image]",
         datetime.now().isoformat()
     ))
 
     conn.execute("""
         INSERT INTO usage
-        (user_id, chat_id, message, created_at)
+        (
+            user_id,
+            chat_id,
+            message,
+            created_at
+        )
         VALUES (?, ?, ?, ?)
     """, (
         user["id"],
         chat_id,
-        message,
+        message or "[Image]",
         datetime.now().isoformat()
     ))
 
@@ -568,22 +765,29 @@ async def chat(request: Request, data: ChatRequest):
     conn.close()
 
     try:
+
         reply = generate_ai_reply(
             message,
             data.image_data
         )
 
     except Exception as e:
+
         raise HTTPException(
             500,
             f"Gemini error: {str(e)}"
         )
 
-    conn = db()
+    conn = get_db()
 
     conn.execute("""
         INSERT INTO messages
-        (chat_id, role, content, created_at)
+        (
+            chat_id,
+            role,
+            content,
+            created_at
+        )
         VALUES (?, 'assistant', ?, ?)
     """, (
         chat_id,
@@ -593,8 +797,8 @@ async def chat(request: Request, data: ChatRequest):
 
     conn.execute("""
         UPDATE chats
-        SET updated_at=?
-        WHERE id=?
+        SET updated_at = ?
+        WHERE id = ?
     """, (
         datetime.now().isoformat(),
         chat_id
@@ -605,29 +809,38 @@ async def chat(request: Request, data: ChatRequest):
 
     return {
         "ok": True,
+        "guest": False,
         "chat_id": chat_id,
         "reply": reply
     }
 
 
-# =========================================================
+# ============================================================
 # CHAT HISTORY
-# =========================================================
+# ============================================================
 
 @app.get("/api/chats")
 async def get_chats(request: Request):
 
-    user = current_user(request)
+    user = get_current_user(request)
 
     if not user:
-        raise HTTPException(401, "Login madi.")
 
-    conn = db()
+        raise HTTPException(
+            401,
+            "Login madi."
+        )
+
+    conn = get_db()
 
     rows = conn.execute("""
-        SELECT id, title, created_at, updated_at
+        SELECT
+            id,
+            title,
+            created_at,
+            updated_at
         FROM chats
-        WHERE user_id=?
+        WHERE user_id = ?
         ORDER BY updated_at DESC
     """, (
         user["id"],
@@ -636,7 +849,10 @@ async def get_chats(request: Request):
     conn.close()
 
     return {
-        "chats": [dict(x) for x in rows]
+        "chats": [
+            dict(row)
+            for row in rows
+        ]
     }
 
 
@@ -646,30 +862,43 @@ async def get_chat(
     request: Request
 ):
 
-    user = current_user(request)
+    user = get_current_user(request)
 
     if not user:
-        raise HTTPException(401, "Login madi.")
 
-    conn = db()
+        raise HTTPException(
+            401,
+            "Login madi."
+        )
+
+    conn = get_db()
 
     chat = conn.execute("""
         SELECT *
         FROM chats
-        WHERE id=? AND user_id=?
+        WHERE id = ?
+        AND user_id = ?
     """, (
         chat_id,
         user["id"]
     )).fetchone()
 
     if not chat:
+
         conn.close()
-        raise HTTPException(404, "Chat not found.")
+
+        raise HTTPException(
+            404,
+            "Chat not found."
+        )
 
     messages = conn.execute("""
-        SELECT role, content, created_at
+        SELECT
+            role,
+            content,
+            created_at
         FROM messages
-        WHERE chat_id=?
+        WHERE chat_id = ?
         ORDER BY id ASC
     """, (
         chat_id,
@@ -679,7 +908,10 @@ async def get_chat(
 
     return {
         "chat": dict(chat),
-        "messages": [dict(x) for x in messages]
+        "messages": [
+            dict(row)
+            for row in messages
+        ]
     }
 
 
@@ -689,21 +921,26 @@ async def delete_chat(
     request: Request
 ):
 
-    user = current_user(request)
+    user = get_current_user(request)
 
     if not user:
-        raise HTTPException(401, "Login madi.")
 
-    conn = db()
+        raise HTTPException(
+            401,
+            "Login madi."
+        )
 
-    conn.execute("""
-        DELETE FROM messages
-        WHERE chat_id=?
-    """, (chat_id,))
+    conn = get_db()
+
+    conn.execute(
+        "DELETE FROM messages WHERE chat_id = ?",
+        (chat_id,)
+    )
 
     conn.execute("""
         DELETE FROM chats
-        WHERE id=? AND user_id=?
+        WHERE id = ?
+        AND user_id = ?
     """, (
         chat_id,
         user["id"]
@@ -717,9 +954,9 @@ async def delete_chat(
     }
 
 
-# =========================================================
-# ACCOUNT / PLANS
-# =========================================================
+# ============================================================
+# PLANS
+# ============================================================
 
 @app.get("/api/plans")
 async def plans():
@@ -728,18 +965,15 @@ async def plans():
         "plans": [
             {
                 "name": "Free",
-                "price": 0,
-                "description": "Basic AI access"
+                "price": 0
             },
             {
                 "name": "Plus",
-                "price": 499,
-                "description": "More AI usage"
+                "price": 499
             },
             {
                 "name": "Pro",
-                "price": 999,
-                "description": "Higher usage and advanced access"
+                "price": 999
             }
         ]
     }
@@ -751,14 +985,21 @@ async def upgrade(
     data: UpgradeRequest
 ):
 
-    user = current_user(request)
+    user = get_current_user(request)
 
     if not user:
-        raise HTTPException(401, "Login madi.")
 
-    allowed = ["Free", "Plus", "Pro"]
+        raise HTTPException(
+            401,
+            "Login madi."
+        )
 
-    if data.plan not in allowed:
+    if data.plan not in [
+        "Free",
+        "Plus",
+        "Pro"
+    ]:
+
         raise HTTPException(
             400,
             "Invalid plan."
@@ -766,12 +1007,12 @@ async def upgrade(
 
     if data.plan == "Free":
 
-        conn = db()
+        conn = get_db()
 
         conn.execute("""
             UPDATE users
-            SET plan='Free'
-            WHERE id=?
+            SET plan = 'Free'
+            WHERE id = ?
         """, (
             user["id"],
         ))
@@ -787,29 +1028,36 @@ async def upgrade(
     return {
         "ok": False,
         "payment_required": True,
-        "message": "Payment gateway connect madida mele paid plan activate agutte.",
-        "plan": data.plan
+        "plan": data.plan,
+        "message":
+            "Payment gateway connect madida mele paid plan activate agutte."
     }
 
 
-# =========================================================
+# ============================================================
 # ADMIN
-# =========================================================
+# ============================================================
 
 def require_admin(request: Request):
 
-    user = current_user(request)
+    user = get_current_user(request)
 
     if not user:
-        raise HTTPException(401, "Login madi.")
+
+        raise HTTPException(
+            401,
+            "Login madi."
+        )
 
     if not OWNER_EMAIL:
+
         raise HTTPException(
             403,
-            "OWNER_EMAIL Render environment variable configure madi."
+            "OWNER_EMAIL configure madi."
         )
 
     if user["email"].lower() != OWNER_EMAIL:
+
         raise HTTPException(
             403,
             "Admin access denied."
@@ -818,64 +1066,12 @@ def require_admin(request: Request):
     return user
 
 
-@app.get("/api/admin/users")
-async def admin_users(request: Request):
-
-    require_admin(request)
-
-    conn = db()
-
-    users = conn.execute("""
-        SELECT
-            id,
-            email,
-            plan,
-            created_at,
-            last_active
-        FROM users
-        ORDER BY id DESC
-    """).fetchall()
-
-    conn.close()
-
-    return {
-        "users": [dict(x) for x in users]
-    }
-
-
-@app.get("/api/admin/activity")
-async def admin_activity(request: Request):
-
-    require_admin(request)
-
-    conn = db()
-
-    rows = conn.execute("""
-        SELECT
-            usage.id,
-            users.email,
-            usage.message,
-            usage.created_at
-        FROM usage
-        JOIN users
-        ON users.id = usage.user_id
-        ORDER BY usage.id DESC
-        LIMIT 200
-    """).fetchall()
-
-    conn.close()
-
-    return {
-        "activity": [dict(x) for x in rows]
-    }
-
-
 @app.get("/api/admin/stats")
 async def admin_stats(request: Request):
 
     require_admin(request)
 
-    conn = db()
+    conn = get_db()
 
     users = conn.execute(
         "SELECT COUNT(*) AS c FROM users"
@@ -898,9 +1094,67 @@ async def admin_stats(request: Request):
     }
 
 
-# =========================================================
+@app.get("/api/admin/users")
+async def admin_users(request: Request):
+
+    require_admin(request)
+
+    conn = get_db()
+
+    rows = conn.execute("""
+        SELECT
+            id,
+            email,
+            plan,
+            created_at,
+            last_active
+        FROM users
+        ORDER BY id DESC
+    """).fetchall()
+
+    conn.close()
+
+    return {
+        "users": [
+            dict(row)
+            for row in rows
+        ]
+    }
+
+
+@app.get("/api/admin/activity")
+async def admin_activity(request: Request):
+
+    require_admin(request)
+
+    conn = get_db()
+
+    rows = conn.execute("""
+        SELECT
+            usage.id,
+            users.email,
+            usage.message,
+            usage.created_at
+        FROM usage
+        JOIN users
+        ON users.id = usage.user_id
+        ORDER BY usage.id DESC
+        LIMIT 200
+    """).fetchall()
+
+    conn.close()
+
+    return {
+        "activity": [
+            dict(row)
+            for row in rows
+        ]
+    }
+
+
+# ============================================================
 # FRONTEND
-# =========================================================
+# ============================================================
 
 HTML = r"""
 <!DOCTYPE html>
@@ -912,10 +1166,10 @@ HTML = r"""
 
 <meta
 name="viewport"
-content="width=device-width,initial-scale=1.0"
+content="width=device-width, initial-scale=1.0"
 >
 
-<title>Nirale AI</title>
+<title>✨ Nirale AI</title>
 
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
@@ -924,7 +1178,9 @@ rel="stylesheet"
 href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css"
 >
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+<script
+src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js">
+</script>
 
 <style>
 
@@ -934,16 +1190,14 @@ href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.
 
 body {
     margin: 0;
-    font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
-    background: #ffffff;
+    font-family: Arial, Helvetica, sans-serif;
     color: #202124;
+    background: #fff;
 }
 
 button,
-input {
+input,
+textarea {
     font: inherit;
 }
 
@@ -952,87 +1206,84 @@ input {
 }
 
 
-/* =====================================================
+/* =========================================================
    AUTH
-===================================================== */
+========================================================= */
 
 #authScreen {
-    min-height: 100vh;
+    position: fixed;
+    inset: 0;
+    z-index: 200;
     display: flex;
-    align-items: center;
     justify-content: center;
-    background:
-        linear-gradient(
-            135deg,
-            #f8f9fa,
-            #ffffff
-        );
+    align-items: center;
+    background: #fff;
     padding: 20px;
 }
 
 .auth-card {
     width: 100%;
     max-width: 420px;
-    padding: 34px;
+    padding: 32px;
     border: 1px solid #e5e7eb;
     border-radius: 22px;
-    background: white;
-    box-shadow:
-        0 15px 45px rgba(0,0,0,.08);
+    box-shadow: 0 15px 45px rgba(0,0,0,.08);
 }
 
-.logo {
-    font-size: 27px;
+.auth-logo {
+    text-align: center;
+    font-size: 30px;
     font-weight: 700;
     margin-bottom: 8px;
 }
 
-.auth-subtitle {
-    color: #6b7280;
-    margin-bottom: 28px;
+.auth-description {
+    text-align: center;
+    color: #777;
+    margin-bottom: 25px;
 }
 
 .auth-card input {
     width: 100%;
-    padding: 14px;
     border: 1px solid #d1d5db;
     border-radius: 12px;
+    padding: 14px;
     margin-bottom: 12px;
     outline: none;
 }
 
 .auth-card input:focus {
-    border-color: #777;
+    border-color: #555;
 }
 
-.primary-btn {
+.primary-button {
     width: 100%;
-    border: 0;
+    border: none;
     border-radius: 12px;
     padding: 14px;
-    cursor: pointer;
-    background: #111827;
     color: white;
+    background: #111827;
+    cursor: pointer;
     font-weight: 600;
 }
 
 .auth-switch {
-    margin-top: 18px;
     text-align: center;
+    margin-top: 18px;
     color: #666;
 }
 
 .auth-switch button {
-    border: 0;
-    background: none;
+    border: none;
+    background: transparent;
     cursor: pointer;
     font-weight: 600;
 }
 
 
-/* =====================================================
+/* =========================================================
    APP
-===================================================== */
+========================================================= */
 
 #app {
     height: 100vh;
@@ -1042,15 +1293,15 @@ input {
 
 .sidebar {
     width: 270px;
-    border-right: 1px solid #e5e7eb;
+    flex-shrink: 0;
     background: #fafafa;
+    border-right: 1px solid #e5e7eb;
     display: flex;
     flex-direction: column;
-    transition: .25s;
 }
 
 .sidebar-top {
-    padding: 15px;
+    padding: 14px;
 }
 
 .new-chat {
@@ -1063,21 +1314,21 @@ input {
     text-align: left;
 }
 
-.side-item {
+.side-button {
     margin-top: 8px;
     padding: 12px;
     border-radius: 10px;
     cursor: pointer;
 }
 
-.side-item:hover {
-    background: #eeeeee;
+.side-button:hover {
+    background: #ededed;
 }
 
 .recents-title {
-    padding: 18px 15px 8px;
-    font-size: 12px;
+    padding: 15px;
     color: #777;
+    font-size: 12px;
     text-transform: uppercase;
 }
 
@@ -1097,10 +1348,10 @@ input {
 }
 
 .recent:hover {
-    background: #eeeeee;
+    background: #eee;
 }
 
-.account-box {
+.account-area {
     padding: 14px;
     border-top: 1px solid #ddd;
 }
@@ -1118,19 +1369,20 @@ input {
 }
 
 
-/* =====================================================
+/* =========================================================
    MAIN
-===================================================== */
+========================================================= */
 
 .main {
     flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
-    min-width: 0;
 }
 
 .header {
     height: 60px;
+    flex-shrink: 0;
     border-bottom: 1px solid #eee;
     display: flex;
     align-items: center;
@@ -1138,36 +1390,36 @@ input {
     gap: 12px;
 }
 
-.menu-btn {
+.menu-button {
     display: none;
-    border: 0;
-    background: none;
+    border: none;
+    background: transparent;
     font-size: 23px;
     cursor: pointer;
 }
 
 .header-logo {
-    font-size: 19px;
+    font-size: 20px;
     font-weight: 700;
 }
 
-.header-spacer {
+.header-space {
     flex: 1;
 }
 
-.upgrade-btn {
-    border: 0;
+.upgrade-button {
+    border: none;
     border-radius: 10px;
     padding: 9px 14px;
-    cursor: pointer;
     background: #111827;
     color: white;
+    cursor: pointer;
 }
 
 
-/* =====================================================
+/* =========================================================
    CHAT
-===================================================== */
+========================================================= */
 
 .chatbox {
     flex: 1;
@@ -1195,26 +1447,22 @@ input {
     line-height: 1.65;
 }
 
-.message.user {
-    background: #f3f4f6;
-    border-radius: 16px;
+.user-message {
     padding: 13px 17px;
+    border-radius: 16px;
+    background: #f3f4f6;
 }
 
-.message.assistant {
+.assistant-message {
     padding: 5px 0;
 }
 
-.message pre {
+.assistant-message pre {
     position: relative;
+    padding: 45px 15px 15px;
+    border-radius: 12px;
     overflow-x: auto;
     background: #f6f8fa;
-    border-radius: 12px;
-    padding: 45px 15px 15px;
-}
-
-.message code {
-    font-family: Consolas, monospace;
 }
 
 .code-actions {
@@ -1228,8 +1476,8 @@ input {
 .code-actions button {
     border: 1px solid #ddd;
     border-radius: 7px;
-    background: white;
     padding: 5px 8px;
+    background: white;
     cursor: pointer;
 }
 
@@ -1240,52 +1488,53 @@ input {
 }
 
 
-/* =====================================================
-   INPUT
-===================================================== */
+/* =========================================================
+   FOOTER
+========================================================= */
 
 .footer {
     padding: 12px 18px 18px;
+    position: relative;
 }
 
-.input-wrap {
+.input-container {
     max-width: 850px;
     margin: auto;
-    border: 1px solid #d9d9d9;
-    border-radius: 18px;
     display: flex;
     align-items: flex-end;
     padding: 8px;
+    border: 1px solid #d9d9d9;
+    border-radius: 18px;
     box-shadow: 0 3px 15px rgba(0,0,0,.05);
 }
 
-.input-wrap textarea {
+.message-input {
     flex: 1;
     resize: none;
-    border: 0;
-    outline: 0;
+    border: none;
+    outline: none;
     padding: 10px;
     min-height: 42px;
     max-height: 150px;
 }
 
-.icon-btn {
+.icon-button {
     width: 40px;
     height: 40px;
-    border: 0;
+    border: none;
     background: transparent;
     border-radius: 10px;
     cursor: pointer;
-    font-size: 19px;
+    font-size: 18px;
 }
 
-.icon-btn:hover {
+.icon-button:hover {
     background: #eee;
 }
 
-.send-btn {
-    background: #111827;
+.send-button {
     color: white;
+    background: #111827;
 }
 
 .listening {
@@ -1294,29 +1543,29 @@ input {
 }
 
 
-/* =====================================================
+/* =========================================================
    PLUS MENU
-===================================================== */
+========================================================= */
 
 .plus-menu {
     position: absolute;
-    bottom: 80px;
     left: 18px;
+    bottom: 82px;
+    width: 230px;
+    padding: 8px;
     background: white;
     border: 1px solid #ddd;
     border-radius: 14px;
-    padding: 8px;
     box-shadow: 0 12px 35px rgba(0,0,0,.15);
-    width: 220px;
     z-index: 50;
 }
 
 .plus-menu button {
     width: 100%;
-    text-align: left;
-    border: 0;
+    border: none;
     background: white;
     padding: 11px;
+    text-align: left;
     border-radius: 9px;
     cursor: pointer;
 }
@@ -1326,73 +1575,77 @@ input {
 }
 
 
-/* =====================================================
-   MODAL
-===================================================== */
+/* =========================================================
+   MODALS
+========================================================= */
 
 .modal {
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,.45);
-    display: flex;
-    align-items: center;
-    justify-content: center;
     z-index: 100;
+    display: flex;
+    justify-content: center;
+    align-items: center;
     padding: 20px;
+    background: rgba(0,0,0,.45);
 }
 
 .modal-card {
     width: 100%;
     max-width: 500px;
-    background: white;
-    border-radius: 18px;
+    max-height: 90vh;
+    overflow-y: auto;
     padding: 25px;
+    border-radius: 18px;
+    background: white;
 }
 
 .modal-close {
     float: right;
-    border: 0;
-    background: none;
-    font-size: 22px;
+    border: none;
+    background: transparent;
+    font-size: 24px;
     cursor: pointer;
 }
 
-.plan {
+.plan-card {
     border: 1px solid #ddd;
     border-radius: 14px;
     padding: 16px;
     margin-top: 10px;
 }
 
-.plan button {
+.plan-card button {
     float: right;
-    border: 0;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
     background: #111827;
     color: white;
-    padding: 8px 12px;
-    border-radius: 8px;
+    cursor: pointer;
 }
 
 
-/* =====================================================
+/* =========================================================
    MOBILE
-===================================================== */
+========================================================= */
 
 @media (max-width: 700px) {
 
     .sidebar {
         position: fixed;
-        z-index: 90;
-        left: -280px;
         top: 0;
         bottom: 0;
+        left: -280px;
+        z-index: 90;
+        transition: left .25s;
     }
 
     .sidebar.open {
         left: 0;
     }
 
-    .menu-btn {
+    .menu-button {
         display: block;
     }
 
@@ -1412,17 +1665,23 @@ input {
         padding: 0 10px;
     }
 
-    .upgrade-btn {
+    .upgrade-button {
         padding: 8px 10px;
     }
 
     .footer {
         padding: 8px;
-        padding-bottom: calc(8px + env(safe-area-inset-bottom));
+        padding-bottom: calc(
+            8px + env(safe-area-inset-bottom)
+        );
     }
 
     .message {
         max-width: 100%;
+    }
+
+    .auth-card {
+        padding: 25px;
     }
 }
 
@@ -1433,21 +1692,28 @@ input {
 <body>
 
 
-<!-- =====================================================
+<!-- =========================================================
      AUTH SCREEN
-===================================================== -->
+     Hidden when user first opens Nirale AI.
+========================================================= -->
 
-<div id="authScreen">
+<div
+    id="authScreen"
+    class="hidden"
+>
 
     <div class="auth-card">
 
-        <div class="logo">
+        <div class="auth-logo">
             ✨ Nirale AI
         </div>
 
-        <div class="auth-subtitle">
-            Your intelligent AI assistant
+        <div class="auth-description">
+            Login to continue using Nirale AI
         </div>
+
+
+        <!-- LOGIN -->
 
         <div id="loginForm">
 
@@ -1464,23 +1730,31 @@ input {
             >
 
             <button
-                class="primary-btn"
+                class="primary-button"
                 onclick="login()"
             >
                 Login
             </button>
 
             <div class="auth-switch">
+
                 Don't have an account?
+
                 <button onclick="showSignup()">
                     Create account
                 </button>
+
             </div>
 
         </div>
 
 
-        <div id="signupForm" class="hidden">
+        <!-- SIGNUP -->
+
+        <div
+            id="signupForm"
+            class="hidden"
+        >
 
             <input
                 id="signupEmail"
@@ -1495,17 +1769,20 @@ input {
             >
 
             <button
-                class="primary-btn"
+                class="primary-button"
                 onclick="signup()"
             >
                 Create account
             </button>
 
             <div class="auth-switch">
+
                 Already have an account?
+
                 <button onclick="showLogin()">
                     Login
                 </button>
+
             </div>
 
         </div>
@@ -1515,14 +1792,19 @@ input {
 </div>
 
 
-<!-- =====================================================
+<!-- =========================================================
      APP
-===================================================== -->
+========================================================= -->
 
-<div id="app" class="hidden">
+<div id="app">
 
 
-    <aside id="sidebar" class="sidebar">
+    <!-- SIDEBAR -->
+
+    <aside
+        id="sidebar"
+        class="sidebar"
+    >
 
         <div class="sidebar-top">
 
@@ -1534,14 +1816,14 @@ input {
             </button>
 
             <div
-                class="side-item"
+                class="side-button"
                 onclick="openUpgrade()"
             >
                 ⭐ Upgrade
             </div>
 
             <div
-                class="side-item"
+                class="side-button"
                 onclick="openAccount()"
             >
                 👤 Account
@@ -1549,7 +1831,7 @@ input {
 
             <div
                 id="adminItem"
-                class="side-item hidden"
+                class="side-button hidden"
                 onclick="openAdmin()"
             >
                 👑 Admin Dashboard
@@ -1565,25 +1847,29 @@ input {
         <div
             id="recents"
             class="recents"
-        ></div>
+        >
+        </div>
 
 
-        <div class="account-box">
+        <div class="account-area">
 
             <div
                 id="sideEmail"
                 class="account-email"
             >
+                Guest
             </div>
 
             <div
                 id="sidePlan"
                 class="account-plan"
             >
+                4 free questions
             </div>
 
             <div
-                class="side-item"
+                id="logoutButton"
+                class="side-button hidden"
                 onclick="logout()"
             >
                 ↪ Logout
@@ -1594,13 +1880,15 @@ input {
     </aside>
 
 
+    <!-- MAIN -->
+
     <main class="main">
 
 
         <header class="header">
 
             <button
-                class="menu-btn"
+                class="menu-button"
                 onclick="toggleSidebar()"
             >
                 ☰
@@ -1610,10 +1898,10 @@ input {
                 ✨ Nirale AI
             </div>
 
-            <div class="header-spacer"></div>
+            <div class="header-space"></div>
 
             <button
-                class="upgrade-btn"
+                class="upgrade-button"
                 onclick="openUpgrade()"
             >
                 ⭐ Upgrade
@@ -1621,6 +1909,8 @@ input {
 
         </header>
 
+
+        <!-- CHATBOX -->
 
         <div
             id="chatbox"
@@ -1645,7 +1935,12 @@ input {
         </div>
 
 
+        <!-- FOOTER -->
+
         <div class="footer">
+
+
+            <!-- PLUS MENU -->
 
             <div
                 id="plusMenu"
@@ -1679,10 +1974,12 @@ input {
             </div>
 
 
-            <div class="input-wrap">
+            <!-- INPUT -->
+
+            <div class="input-container">
 
                 <button
-                    class="icon-btn"
+                    class="icon-button"
                     onclick="togglePlusMenu()"
                 >
                     ＋
@@ -1690,21 +1987,22 @@ input {
 
                 <textarea
                     id="messageInput"
-                    placeholder="Message Nirale AI..."
+                    class="message-input"
                     rows="1"
+                    placeholder="Message Nirale AI..."
                     onkeydown="handleKey(event)"
                 ></textarea>
 
                 <button
                     id="micBtn"
-                    class="icon-btn"
+                    class="icon-button"
                     onclick="startVoice()"
                 >
                     🎤
                 </button>
 
                 <button
-                    class="icon-btn send-btn"
+                    class="icon-button send-button"
                     onclick="sendMessage()"
                 >
                     ➤
@@ -1718,6 +2016,8 @@ input {
 
 </div>
 
+
+<!-- FILE INPUTS -->
 
 <input
     id="fileInput"
@@ -1744,9 +2044,7 @@ input {
 >
 
 
-<!-- =====================================================
-     ACCOUNT MODAL
-===================================================== -->
+<!-- ACCOUNT MODAL -->
 
 <div
     id="accountModal"
@@ -1762,9 +2060,10 @@ input {
             ×
         </button>
 
-        <h2>Account</h2>
+        <h2>👤 Account</h2>
 
         <p id="accountEmail"></p>
+
         <p id="accountPlan"></p>
 
     </div>
@@ -1772,9 +2071,7 @@ input {
 </div>
 
 
-<!-- =====================================================
-     UPGRADE MODAL
-===================================================== -->
+<!-- UPGRADE MODAL -->
 
 <div
     id="upgradeModal"
@@ -1790,39 +2087,48 @@ input {
             ×
         </button>
 
-        <h2>Upgrade Nirale AI</h2>
+        <h2>⭐ Upgrade Nirale AI</h2>
 
-        <div class="plan">
+
+        <div class="plan-card">
 
             <b>Free</b>
 
             <p>₹0</p>
 
-            <button onclick="selectPlan('Free')">
+            <button
+                onclick="selectPlan('Free')"
+            >
                 Select
             </button>
 
         </div>
 
-        <div class="plan">
+
+        <div class="plan-card">
 
             <b>Plus</b>
 
             <p>₹499 / month</p>
 
-            <button onclick="selectPlan('Plus')">
+            <button
+                onclick="selectPlan('Plus')"
+            >
                 Upgrade
             </button>
 
         </div>
 
-        <div class="plan">
+
+        <div class="plan-card">
 
             <b>Pro</b>
 
             <p>₹999 / month</p>
 
-            <button onclick="selectPlan('Pro')">
+            <button
+                onclick="selectPlan('Pro')"
+            >
                 Upgrade
             </button>
 
@@ -1833,9 +2139,7 @@ input {
 </div>
 
 
-<!-- =====================================================
-     ADMIN MODAL
-===================================================== -->
+<!-- ADMIN MODAL -->
 
 <div
     id="adminModal"
@@ -1859,15 +2163,23 @@ input {
 
         <div
             id="adminUsers"
-            style="max-height:250px;overflow:auto;"
-        ></div>
+            style="
+                max-height:250px;
+                overflow:auto;
+            "
+        >
+        </div>
 
         <h3>Recent Activity</h3>
 
         <div
             id="adminActivity"
-            style="max-height:250px;overflow:auto;"
-        ></div>
+            style="
+                max-height:250px;
+                overflow:auto;
+            "
+        >
+        </div>
 
     </div>
 
@@ -1876,31 +2188,18 @@ input {
 
 <script>
 
-/* =====================================================
+/* ============================================================
    GLOBAL
-===================================================== */
+============================================================ */
 
 let currentChatId = null;
 let selectedImage = null;
+let recognition = null;
 
 
-/* =====================================================
+/* ============================================================
    AUTH UI
-===================================================== */
-
-function showSignup() {
-
-    document
-        .getElementById("loginForm")
-        .classList
-        .add("hidden");
-
-    document
-        .getElementById("signupForm")
-        .classList
-        .remove("hidden");
-}
-
+============================================================ */
 
 function showLogin() {
 
@@ -1916,84 +2215,72 @@ function showLogin() {
 }
 
 
-/* =====================================================
-   SIGNUP
-===================================================== */
+function showSignup() {
 
-async function signup() {
+    document
+        .getElementById("loginForm")
+        .classList
+        .add("hidden");
 
-    const email =
-        document.getElementById("signupEmail").value.trim();
-
-    const password =
-        document.getElementById("signupPassword").value;
-
-    if (!email || !password) {
-        alert("Email ಮತ್ತು password enter madi.");
-        return;
-    }
-
-    const res = await fetch(
-        "/api/signup",
-        {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                email,
-                password
-            })
-        }
-    );
-
-    const data = await res.json();
-
-    if (!res.ok) {
-        alert(data.detail || "Signup failed.");
-        return;
-    }
-
-    await loadApp();
-
+    document
+        .getElementById("signupForm")
+        .classList
+        .remove("hidden");
 }
 
 
-/* =====================================================
+/* ============================================================
    LOGIN
-===================================================== */
+============================================================ */
 
 async function login() {
 
     const email =
-        document.getElementById("loginEmail").value.trim();
+        document
+            .getElementById("loginEmail")
+            .value
+            .trim();
 
     const password =
-        document.getElementById("loginPassword").value;
+        document
+            .getElementById("loginPassword")
+            .value;
 
     if (!email || !password) {
-        alert("Email ಮತ್ತು password enter madi.");
+
+        alert(
+            "Email ಮತ್ತು password enter madi."
+        );
+
         return;
     }
 
-    const res = await fetch(
-        "/api/login",
-        {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                email,
-                password
-            })
-        }
-    );
+    const res =
+        await fetch(
+            "/api/login",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type":
+                        "application/json"
+                },
+                body: JSON.stringify({
+                    email,
+                    password
+                })
+            }
+        );
 
-    const data = await res.json();
+    const data =
+        await res.json();
 
     if (!res.ok) {
-        alert(data.detail || "Login failed.");
+
+        alert(
+            data.detail ||
+            "Login failed."
+        );
+
         return;
     }
 
@@ -2002,30 +2289,117 @@ async function login() {
 }
 
 
-/* =====================================================
+/* ============================================================
+   SIGNUP
+============================================================ */
+
+async function signup() {
+
+    const email =
+        document
+            .getElementById("signupEmail")
+            .value
+            .trim();
+
+    const password =
+        document
+            .getElementById("signupPassword")
+            .value;
+
+    if (!email || !password) {
+
+        alert(
+            "Email ಮತ್ತು password enter madi."
+        );
+
+        return;
+    }
+
+    const res =
+        await fetch(
+            "/api/signup",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type":
+                        "application/json"
+                },
+                body: JSON.stringify({
+                    email,
+                    password
+                })
+            }
+        );
+
+    const data =
+        await res.json();
+
+    if (!res.ok) {
+
+        alert(
+            data.detail ||
+            "Signup failed."
+        );
+
+        return;
+    }
+
+    await loadApp();
+
+}
+
+
+/* ============================================================
    LOAD APP
-===================================================== */
+============================================================ */
 
 async function loadApp() {
 
-    const res = await fetch("/api/me");
+    const res =
+        await fetch("/api/me");
 
-    const user = await res.json();
+    const user =
+        await res.json();
+
+
+    /* -----------------------------------------
+       GUEST
+    ----------------------------------------- */
 
     if (!user.logged_in) {
 
         document
             .getElementById("authScreen")
             .classList
-            .remove("hidden");
+            .add("hidden");
 
         document
             .getElementById("app")
+            .classList
+            .remove("hidden");
+
+        document
+            .getElementById("sideEmail")
+            .textContent =
+            "Guest";
+
+        document
+            .getElementById("sidePlan")
+            .textContent =
+            "4 free questions";
+
+        document
+            .getElementById("logoutButton")
             .classList
             .add("hidden");
 
         return;
     }
+
+
+    /* -----------------------------------------
+       LOGGED IN
+    ----------------------------------------- */
 
     document
         .getElementById("authScreen")
@@ -2037,51 +2411,59 @@ async function loadApp() {
         .classList
         .remove("hidden");
 
-    document.getElementById("sideEmail").textContent =
+
+    document
+        .getElementById("sideEmail")
+        .textContent =
         user.email;
 
-    document.getElementById("sidePlan").textContent =
+    document
+        .getElementById("sidePlan")
+        .textContent =
         user.plan + " plan";
 
-    document.getElementById("accountEmail").textContent =
+
+    document
+        .getElementById("logoutButton")
+        .classList
+        .remove("hidden");
+
+
+    document
+        .getElementById("accountEmail")
+        .textContent =
         "Email: " + user.email;
 
-    document.getElementById("accountPlan").textContent =
+
+    document
+        .getElementById("accountPlan")
+        .textContent =
         "Plan: " + user.plan;
 
-    if (
-        window.location.hostname &&
-        user.email
-    ) {
 
-        /*
-         Admin item is displayed only when
-         server-side admin endpoint confirms access.
-        */
+    loadRecents();
 
-        const test = await fetch(
+
+    const adminCheck =
+        await fetch(
             "/api/admin/stats"
         );
 
-        if (test.ok) {
+    if (adminCheck.ok) {
 
-            document
-                .getElementById("adminItem")
-                .classList
-                .remove("hidden");
-
-        }
+        document
+            .getElementById("adminItem")
+            .classList
+            .remove("hidden");
 
     }
-
-    loadRecents();
 
 }
 
 
-/* =====================================================
+/* ============================================================
    LOGOUT
-===================================================== */
+============================================================ */
 
 async function logout() {
 
@@ -2096,9 +2478,9 @@ async function logout() {
 }
 
 
-/* =====================================================
+/* ============================================================
    SIDEBAR
-===================================================== */
+============================================================ */
 
 function toggleSidebar() {
 
@@ -2109,9 +2491,36 @@ function toggleSidebar() {
 }
 
 
-/* =====================================================
+/* ============================================================
+   NEW CHAT
+============================================================ */
+
+function newChat() {
+
+    currentChatId = null;
+    selectedImage = null;
+
+    document
+        .getElementById("chatbox")
+        .innerHTML = `
+            <div
+                id="welcome"
+                class="welcome"
+            >
+                <h1>How can I help you?</h1>
+                <p>Ask Nirale AI anything.</p>
+            </div>
+        `;
+
+    document
+        .getElementById("messageInput")
+        .focus();
+}
+
+
+/* ============================================================
    PLUS MENU
-===================================================== */
+============================================================ */
 
 function togglePlusMenu() {
 
@@ -2160,12 +2569,9 @@ function fileSelected(event) {
     if (!file) return;
 
     addUserMessage(
-        "📎 Attached file: " + file.name
+        "📎 Attached file: " +
+        file.name
     );
-
-    document
-        .getElementById("messageInput")
-        .focus();
 }
 
 
@@ -2179,43 +2585,54 @@ function imageSelected(event) {
     const reader =
         new FileReader();
 
-    reader.onload = function(e) {
+    reader.onload =
+        function(e) {
 
-        selectedImage =
-            e.target.result;
+            selectedImage =
+                e.target.result;
 
-        const chat =
-            document.getElementById("chatbox");
+            const chat =
+                document
+                    .getElementById("chatbox");
 
-        const div =
-            document.createElement("div");
+            const div =
+                document
+                    .createElement("div");
 
-        div.className =
-            "message user";
+            div.className =
+                "message user-message";
 
-        div.innerHTML =
-            `<img
-                src="${selectedImage}"
-                style="
-                    max-width:280px;
-                    max-height:280px;
-                    border-radius:14px;
-                "
-            >`;
+            const img =
+                document
+                    .createElement("img");
 
-        chat.appendChild(div);
+            img.src =
+                selectedImage;
 
-        chat.scrollTop =
-            chat.scrollHeight;
-    };
+            img.style.maxWidth =
+                "280px";
+
+            img.style.maxHeight =
+                "280px";
+
+            img.style.borderRadius =
+                "14px";
+
+            div.appendChild(img);
+
+            chat.appendChild(div);
+
+            chat.scrollTop =
+                chat.scrollHeight;
+        };
 
     reader.readAsDataURL(file);
 }
 
 
-/* =====================================================
-   WEB / MAP / IMAGE
-===================================================== */
+/* ============================================================
+   WEB SEARCH
+============================================================ */
 
 function webSearch() {
 
@@ -2227,24 +2644,19 @@ function webSearch() {
             .value
             .trim();
 
-    if (q) {
-
-        window.open(
-            "https://www.google.com/search?q=" +
-            encodeURIComponent(q),
-            "_blank"
-        );
-
-    } else {
-
-        window.open(
-            "https://www.google.com",
-            "_blank"
-        );
-
-    }
+    window.open(
+        "https://www.google.com/search?q=" +
+        encodeURIComponent(
+            q || "Nirale AI"
+        ),
+        "_blank"
+    );
 }
 
+
+/* ============================================================
+   MAP
+============================================================ */
 
 function openMap() {
 
@@ -2258,68 +2670,54 @@ function openMap() {
 
     window.open(
         "https://www.google.com/maps/search/" +
-        encodeURIComponent(q || "India"),
+        encodeURIComponent(
+            q || "India"
+        ),
         "_blank"
     );
 }
 
+
+/* ============================================================
+   CREATE IMAGE
+============================================================ */
 
 function createImage() {
 
     togglePlusMenu();
 
     addAssistantMessage(
-        "🎨 Create Image option selected. " +
-        "Image generation API connect madidaga " +
-        "illi actual image generation enable madabahudu."
+        "🎨 Create Image selected. " +
+        "Actual image generation API connect " +
+        "madida mele image generate madabahudu."
     );
 }
 
 
-/* =====================================================
-   CHAT
-===================================================== */
-
-function newChat() {
-
-    currentChatId = null;
-    selectedImage = null;
-
-    document
-        .getElementById("chatbox")
-        .innerHTML = `
-            <div
-                id="welcome"
-                class="welcome"
-            >
-                <h1>How can I help you?</h1>
-                <p>Ask Nirale AI anything.</p>
-            </div>
-        `;
-
-    document
-        .getElementById("messageInput")
-        .focus();
-}
-
+/* ============================================================
+   ADD USER MESSAGE
+============================================================ */
 
 function addUserMessage(text) {
 
     const welcome =
-        document.getElementById("welcome");
+        document
+            .getElementById("welcome");
 
     if (welcome) {
         welcome.remove();
     }
 
     const chat =
-        document.getElementById("chatbox");
+        document
+            .getElementById("chatbox");
 
     const div =
-        document.createElement("div");
+        document
+            .createElement("div");
 
     div.className =
-        "message user";
+        "message user-message";
 
     div.textContent =
         text;
@@ -2331,16 +2729,30 @@ function addUserMessage(text) {
 }
 
 
+/* ============================================================
+   ADD ASSISTANT MESSAGE
+============================================================ */
+
 function addAssistantMessage(text) {
 
+    const welcome =
+        document
+            .getElementById("welcome");
+
+    if (welcome) {
+        welcome.remove();
+    }
+
     const chat =
-        document.getElementById("chatbox");
+        document
+            .getElementById("chatbox");
 
     const div =
-        document.createElement("div");
+        document
+            .createElement("div");
 
     div.className =
-        "message assistant";
+        "message assistant-message";
 
     div.innerHTML =
         marked.parse(text);
@@ -2354,9 +2766,9 @@ function addAssistantMessage(text) {
 }
 
 
-/* =====================================================
-   CODE ACTIONS
-===================================================== */
+/* ============================================================
+   CODE FORMAT
+============================================================ */
 
 function formatCode(container) {
 
@@ -2369,103 +2781,138 @@ function formatCode(container) {
 
             if (!code) return;
 
-            hljs.highlightElement(code);
+            try {
+                hljs.highlightElement(code);
+            } catch(e) {}
+
 
             const actions =
-                document.createElement("div");
+                document
+                    .createElement("div");
 
             actions.className =
                 "code-actions";
 
+
             const copy =
-                document.createElement("button");
+                document
+                    .createElement("button");
 
             copy.textContent =
                 "Copy";
 
             copy.onclick =
-                () => {
+                async function() {
 
-                    navigator
-                        .clipboard
-                        .writeText(code.innerText);
+                    try {
 
-                    copy.textContent =
-                        "Copied";
+                        await navigator
+                            .clipboard
+                            .writeText(
+                                code.innerText
+                            );
 
-                    setTimeout(
-                        () => copy.textContent = "Copy",
-                        1200
-                    );
+                        copy.textContent =
+                            "Copied";
+
+                        setTimeout(
+                            () => {
+                                copy.textContent =
+                                    "Copy";
+                            },
+                            1200
+                        );
+
+                    } catch(e) {}
                 };
 
 
             const download =
-                document.createElement("button");
+                document
+                    .createElement("button");
 
             download.textContent =
                 "Download";
 
             download.onclick =
-                () => {
+                function() {
 
                     const blob =
                         new Blob(
                             [code.innerText],
-                            {type:"text/plain"}
+                            {
+                                type:
+                                    "text/plain"
+                            }
                         );
 
                     const url =
-                        URL.createObjectURL(blob);
+                        URL.createObjectURL(
+                            blob
+                        );
 
                     const a =
-                        document.createElement("a");
+                        document
+                            .createElement("a");
 
-                    a.href = url;
+                    a.href =
+                        url;
 
                     a.download =
                         "nirale-code.txt";
 
                     a.click();
 
-                    URL.revokeObjectURL(url);
+                    URL.revokeObjectURL(
+                        url
+                    );
                 };
+
 
             actions.appendChild(copy);
             actions.appendChild(download);
 
             pre.appendChild(actions);
+
         });
 }
 
 
-/* =====================================================
-   SEND
-===================================================== */
+/* ============================================================
+   SEND MESSAGE
+============================================================ */
 
 async function sendMessage() {
 
     const input =
-        document.getElementById("messageInput");
+        document
+            .getElementById("messageInput");
 
     const message =
         input.value.trim();
+
 
     if (!message && !selectedImage) {
         return;
     }
 
+
     if (message) {
         addUserMessage(message);
     }
 
+
     input.value = "";
 
+
     const chat =
-        document.getElementById("chatbox");
+        document
+            .getElementById("chatbox");
+
 
     const thinking =
-        document.createElement("div");
+        document
+            .createElement("div");
 
     thinking.className =
         "thinking";
@@ -2477,6 +2924,7 @@ async function sendMessage() {
 
     chat.scrollTop =
         chat.scrollHeight;
+
 
     try {
 
@@ -2491,7 +2939,8 @@ async function sendMessage() {
                     },
                     body: JSON.stringify({
                         message:
-                            message || "ಈ image ನೋಡಿ.",
+                            message ||
+                            "ಈ image ನೋಡಿ.",
                         chat_id:
                             currentChatId,
                         image_data:
@@ -2500,34 +2949,80 @@ async function sendMessage() {
                 }
             );
 
+
         const data =
             await res.json();
 
+
         thinking.remove();
+
+
+        /* ------------------------------------
+           4 QUESTIONS COMPLETE
+        ------------------------------------ */
+
+        if (
+            data.detail ===
+            "FREE_LOGIN_REQUIRED"
+        ) {
+
+            showLoginRequired();
+
+            return;
+        }
+
 
         if (!res.ok) {
 
             addAssistantMessage(
                 "❌ " +
-                (data.detail ||
-                "Something went wrong.")
+                (
+                    data.detail ||
+                    "Something went wrong."
+                )
             );
 
             return;
         }
 
-        currentChatId =
-            data.chat_id;
+
+        if (data.chat_id) {
+
+            currentChatId =
+                data.chat_id;
+        }
+
 
         selectedImage = null;
+
 
         addAssistantMessage(
             data.reply
         );
 
+
+        /* ------------------------------------
+           AFTER 4TH ANSWER
+        ------------------------------------ */
+
+        if (
+            data.guest === true &&
+            data.guest_count >= 4
+        ) {
+
+            setTimeout(
+                () => {
+                    showLoginRequired();
+                },
+                1000
+            );
+
+        }
+
+
         loadRecents();
 
-    } catch (error) {
+    } catch(error) {
 
         thinking.remove();
 
@@ -2538,9 +3033,29 @@ async function sendMessage() {
 }
 
 
-/* =====================================================
+/* ============================================================
+   LOGIN REQUIRED
+============================================================ */
+
+function showLoginRequired() {
+
+    document
+        .getElementById("authScreen")
+        .classList
+        .remove("hidden");
+
+    document
+        .getElementById("app")
+        .classList
+        .add("hidden");
+
+    showLogin();
+}
+
+
+/* ============================================================
    ENTER KEY
-===================================================== */
+============================================================ */
 
 function handleKey(event) {
 
@@ -2556,11 +3071,9 @@ function handleKey(event) {
 }
 
 
-/* =====================================================
+/* ============================================================
    VOICE
-===================================================== */
-
-let recognition = null;
+============================================================ */
 
 function startVoice() {
 
@@ -2568,18 +3081,21 @@ function startVoice() {
         window.SpeechRecognition ||
         window.webkitSpeechRecognition;
 
+
     if (!SpeechRecognition) {
 
         alert(
-            "Voice input ಈ browserನಲ್ಲಿ support ಆಗುತ್ತಿಲ್ಲ."
+            "ಈ browserನಲ್ಲಿ voice input support ಇಲ್ಲ."
         );
 
         return;
     }
 
+
     if (recognition) {
 
         recognition.stop();
+
         recognition = null;
 
         document
@@ -2590,8 +3106,10 @@ function startVoice() {
         return;
     }
 
+
     recognition =
         new SpeechRecognition();
+
 
     recognition.lang =
         "kn-IN";
@@ -2602,12 +3120,15 @@ function startVoice() {
     recognition.interimResults =
         true;
 
+
     const mic =
-        document.getElementById("micBtn");
+        document
+            .getElementById("micBtn");
 
     mic.classList.add(
         "listening"
     );
+
 
     recognition.onresult =
         function(event) {
@@ -2621,7 +3142,8 @@ function startVoice() {
             ) {
 
                 text +=
-                    event.results[i][0].transcript;
+                    event.results[i][0]
+                        .transcript;
             }
 
             document
@@ -2651,18 +3173,21 @@ function startVoice() {
             recognition = null;
         };
 
+
     recognition.start();
 }
 
 
-/* =====================================================
+/* ============================================================
    RECENTS
-===================================================== */
+============================================================ */
 
 async function loadRecents() {
 
     const res =
-        await fetch("/api/chats");
+        await fetch(
+            "/api/chats"
+        );
 
     if (!res.ok) return;
 
@@ -2670,28 +3195,40 @@ async function loadRecents() {
         await res.json();
 
     const recents =
-        document.getElementById("recents");
+        document
+            .getElementById("recents");
 
     recents.innerHTML = "";
+
 
     data.chats.forEach(chat => {
 
         const div =
-            document.createElement("div");
+            document
+                .createElement("div");
 
         div.className =
             "recent";
 
         div.textContent =
-            chat.title || "New Chat";
+            chat.title ||
+            "New Chat";
 
         div.onclick =
-            () => openChat(chat.id);
+            function() {
+
+                openChat(chat.id);
+            };
 
         recents.appendChild(div);
+
     });
 }
 
+
+/* ============================================================
+   OPEN CHAT
+============================================================ */
 
 async function openChat(id) {
 
@@ -2708,48 +3245,58 @@ async function openChat(id) {
     currentChatId =
         id;
 
+
     const chatbox =
-        document.getElementById("chatbox");
+        document
+            .getElementById("chatbox");
 
     chatbox.innerHTML = "";
 
-    data.messages.forEach(msg => {
 
-        const div =
-            document.createElement("div");
+    data.messages.forEach(
+        msg => {
 
-        div.className =
-            "message " +
-            (
+            const div =
+                document
+                    .createElement("div");
+
+            if (
                 msg.role === "user"
-                ? "user"
-                : "assistant"
-            );
+            ) {
 
-        if (msg.role === "user") {
+                div.className =
+                    "message user-message";
 
-            div.textContent =
-                msg.content;
+                div.textContent =
+                    msg.content;
 
-        } else {
+            } else {
 
-            div.innerHTML =
-                marked.parse(msg.content);
+                div.className =
+                    "message assistant-message";
 
-            formatCode(div);
+                div.innerHTML =
+                    marked.parse(
+                        msg.content
+                    );
+
+                formatCode(div);
+            }
+
+            chatbox.appendChild(div);
+
         }
+    );
 
-        chatbox.appendChild(div);
-    });
 
     chatbox.scrollTop =
         chatbox.scrollHeight;
 }
 
 
-/* =====================================================
-   ACCOUNT / UPGRADE
-===================================================== */
+/* ============================================================
+   ACCOUNT
+============================================================ */
 
 function openAccount() {
 
@@ -2760,6 +3307,10 @@ function openAccount() {
 }
 
 
+/* ============================================================
+   UPGRADE
+============================================================ */
+
 function openUpgrade() {
 
     document
@@ -2769,15 +3320,26 @@ function openUpgrade() {
 }
 
 
+/* ============================================================
+   CLOSE MODALS
+============================================================ */
+
 function closeModals() {
 
     document
         .querySelectorAll(".modal")
-        .forEach(x =>
-            x.classList.add("hidden")
+        .forEach(
+            modal =>
+                modal.classList.add(
+                    "hidden"
+                )
         );
 }
 
+
+/* ============================================================
+   PLAN
+============================================================ */
 
 async function selectPlan(plan) {
 
@@ -2796,10 +3358,14 @@ async function selectPlan(plan) {
             }
         );
 
+
     const data =
         await res.json();
 
-    if (data.payment_required) {
+
+    if (
+        data.payment_required
+    ) {
 
         alert(
             "Paid plan activate madoke payment gateway connect madbeku."
@@ -2807,6 +3373,7 @@ async function selectPlan(plan) {
 
         return;
     }
+
 
     if (!res.ok) {
 
@@ -2818,15 +3385,16 @@ async function selectPlan(plan) {
         return;
     }
 
+
     closeModals();
 
     loadApp();
 }
 
 
-/* =====================================================
+/* ============================================================
    ADMIN
-===================================================== */
+============================================================ */
 
 async function openAdmin() {
 
@@ -2835,21 +3403,35 @@ async function openAdmin() {
             "/api/admin/stats"
         );
 
+
     if (!statsRes.ok) {
 
-        alert("Admin access denied.");
+        alert(
+            "Admin access denied."
+        );
+
         return;
     }
+
 
     const stats =
         await statsRes.json();
 
+
     document
         .getElementById("adminStats")
         .innerHTML = `
-            <p>Users: ${stats.users}</p>
-            <p>Messages: ${stats.messages}</p>
-            <p>Chats: ${stats.chats}</p>
+            <p>
+                Users: ${stats.users}
+            </p>
+
+            <p>
+                Messages: ${stats.messages}
+            </p>
+
+            <p>
+                Chats: ${stats.chats}
+            </p>
         `;
 
 
@@ -2858,24 +3440,47 @@ async function openAdmin() {
             "/api/admin/users"
         );
 
+
     const users =
         await usersRes.json();
+
 
     document
         .getElementById("adminUsers")
         .innerHTML =
-        users.users.map(
-            u => `
-                <div style="
-                    padding:8px;
-                    border-bottom:1px solid #eee;
-                ">
-                    <b>${escapeHtml(u.email)}</b><br>
-                    Plan: ${escapeHtml(u.plan)}<br>
-                    Created: ${escapeHtml(u.created_at)}
-                </div>
-            `
-        ).join("");
+        users.users
+            .map(
+                user => `
+                    <div
+                        style="
+                            padding:8px;
+                            border-bottom:
+                                1px solid #eee;
+                        "
+                    >
+                        <b>
+                            ${escapeHtml(
+                                user.email
+                            )}
+                        </b>
+
+                        <br>
+
+                        Plan:
+                        ${escapeHtml(
+                            user.plan
+                        )}
+
+                        <br>
+
+                        Created:
+                        ${escapeHtml(
+                            user.created_at
+                        )}
+                    </div>
+                `
+            )
+            .join("");
 
 
     const activityRes =
@@ -2883,26 +3488,47 @@ async function openAdmin() {
             "/api/admin/activity"
         );
 
+
     const activity =
         await activityRes.json();
+
 
     document
         .getElementById("adminActivity")
         .innerHTML =
-        activity.activity.map(
-            a => `
-                <div style="
-                    padding:8px;
-                    border-bottom:1px solid #eee;
-                ">
-                    <b>${escapeHtml(a.email)}</b><br>
-                    ${escapeHtml(a.message)}<br>
-                    <small>
-                        ${escapeHtml(a.created_at)}
-                    </small>
-                </div>
-            `
-        ).join("");
+        activity.activity
+            .map(
+                item => `
+                    <div
+                        style="
+                            padding:8px;
+                            border-bottom:
+                                1px solid #eee;
+                        "
+                    >
+                        <b>
+                            ${escapeHtml(
+                                item.email
+                            )}
+                        </b>
+
+                        <br>
+
+                        ${escapeHtml(
+                            item.message
+                        )}
+
+                        <br>
+
+                        <small>
+                            ${escapeHtml(
+                                item.created_at
+                            )}
+                        </small>
+                    </div>
+                `
+            )
+            .join("");
 
 
     document
@@ -2912,14 +3538,15 @@ async function openAdmin() {
 }
 
 
-/* =====================================================
+/* ============================================================
    ESCAPE HTML
-===================================================== */
+============================================================ */
 
 function escapeHtml(text) {
 
     const div =
-        document.createElement("div");
+        document
+            .createElement("div");
 
     div.textContent =
         text || "";
@@ -2928,9 +3555,9 @@ function escapeHtml(text) {
 }
 
 
-/* =====================================================
+/* ============================================================
    START
-===================================================== */
+============================================================ */
 
 loadApp();
 
@@ -2941,11 +3568,12 @@ loadApp();
 """
 
 
-# =========================================================
+# ============================================================
 # ROOT
-# =========================================================
+# ============================================================
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
 
     return HTMLResponse(HTML)
+
