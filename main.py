@@ -58,7 +58,8 @@ def init_db():
         user_id INTEGER NOT NULL,
         title TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        guest_token TEXT
     );
     CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,13 +74,38 @@ def init_db():
         email TEXT,
         question TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        plan TEXT DEFAULT 'Guest'
+        plan TEXT DEFAULT 'Guest',
+        guest_token TEXT
     );
     """)
     c.commit()
     c.close()
 
 init_db()
+
+def migrate_schema():
+    c = db()
+    try:
+        cols = [r[1] for r in c.execute("PRAGMA table_info(chats)").fetchall()]
+        if "guest_token" not in cols:
+            c.execute("ALTER TABLE chats ADD COLUMN guest_token TEXT")
+        cols = [r[1] for r in c.execute("PRAGMA table_info(usage)").fetchall()]
+        if "guest_token" not in cols:
+            c.execute("ALTER TABLE usage ADD COLUMN guest_token TEXT")
+        c.commit()
+    finally:
+        c.close()
+
+migrate_schema()
+
+def guest_token(request: Request):
+    return request.cookies.get("nirale_guest_id")
+
+def migrate_guest_data(c, token, user_id, email, plan):
+    if not token:
+        return
+    c.execute("UPDATE chats SET user_id=?, guest_token=NULL WHERE guest_token=?", (user_id, token))
+    c.execute("UPDATE usage SET user_id=?, email=?, plan=?, guest_token=NULL WHERE guest_token=?", (user_id, email, plan, token))
 
 class AuthBody(BaseModel):
     email: str
@@ -173,7 +199,7 @@ def ask_gemini(message, history=None):
         return f"Gemini error: {str(e)}"
 
 @app.post("/api/signup")
-def signup(body: AuthBody):
+def signup(body: AuthBody, request: Request):
     email = body.email.strip().lower()
     password = body.password
     if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
@@ -191,6 +217,7 @@ def signup(body: AuthBody):
         uid = cur.lastrowid
         token = secrets.token_urlsafe(32)
         c.execute("INSERT INTO sessions VALUES(?,?,?)", (token, uid, now()))
+        migrate_guest_data(c, guest_token(request), uid, email, "Free")
         c.commit()
     except sqlite3.IntegrityError:
         c.close()
@@ -201,18 +228,23 @@ def signup(body: AuthBody):
     r = JSONResponse({"ok": True})
     r.set_cookie("nirale_session", token, httponly=True, samesite="lax", secure=False, max_age=60*60*24*30)
     r.delete_cookie("nirale_guest_count")
+    r.delete_cookie("nirale_guest_id")
     return r
 
 @app.post("/api/login")
-def login(body: AuthBody):
+def login(body: AuthBody, request: Request):
     email = body.email.strip().lower()
     c = db()
     user = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
-    if not user or not verify_password(body.password, user["password_hash"], user["salt"]):
+    if not user:
         c.close()
-        return {"ok": False, "error": "Invalid email or password."}
+        return {"ok": False, "error": "Account not found. Please use Create account."}
+    if not verify_password(body.password, user["password_hash"], user["salt"]):
+        c.close()
+        return {"ok": False, "error": "Incorrect password. Use the password you created for Nirale AI."}
     token = secrets.token_urlsafe(32)
     c.execute("INSERT INTO sessions VALUES(?,?,?)", (token, user["id"], now()))
+    migrate_guest_data(c, guest_token(request), user["id"], user["email"], user["plan"])
     c.execute("UPDATE users SET last_active=? WHERE id=?", (now(), user["id"]))
     c.commit()
     c.close()
@@ -221,6 +253,7 @@ def login(body: AuthBody):
     r = JSONResponse({"ok": True})
     r.set_cookie("nirale_session", token, httponly=True, samesite="lax", secure=False, max_age=60*60*24*30)
     r.delete_cookie("nirale_guest_count")
+    r.delete_cookie("nirale_guest_id")
     return r
 
 @app.post("/api/logout")
@@ -252,13 +285,21 @@ def me(request: Request):
 @app.get("/api/chats")
 def chats(request: Request):
     u = get_user(request)
-    if not u:
-        return {"ok": True, "chats": []}
+    token = guest_token(request)
     c = db()
-    rows = c.execute("""
-        SELECT id,title,created_at,updated_at
-        FROM chats WHERE user_id=? ORDER BY updated_at DESC
-    """, (u["id"],)).fetchall()
+    if u:
+        rows = c.execute("""
+            SELECT id,title,created_at,updated_at
+            FROM chats WHERE user_id=? ORDER BY updated_at DESC
+        """, (u["id"],)).fetchall()
+    elif token:
+        rows = c.execute("""
+            SELECT id,title,created_at,updated_at
+            FROM chats WHERE guest_token=? ORDER BY updated_at DESC
+        """, (token,)).fetchall()
+    else:
+        c.close()
+        return {"ok": True, "chats": []}
     c.close()
     return {"ok": True, "chats": [dict(x) for x in rows]}
 
@@ -299,6 +340,7 @@ def chat(body: ChatBody, request: Request):
         return {"ok": False, "error": "Please type a message."}
 
     u = get_user(request)
+    gtoken = guest_token(request) or secrets.token_urlsafe(24)
 
     # Exactly four guest questions are allowed.
     if not u:
@@ -368,14 +410,35 @@ def chat(body: ChatBody, request: Request):
 
         return {"ok": True, "answer": answer, "chat_id": chat_id}
 
-    # guest usage
+    # Guest usage and chat history are also saved, then migrated to the
+    # account automatically when the guest creates/logs into an account.
     old = int(request.cookies.get("nirale_guest_count", "0") or 0)
     new = old + 1
     c = db()
+    chat_id = body.chat_id
+    owned = None
+    if chat_id:
+        owned = c.execute("SELECT id FROM chats WHERE id=? AND guest_token=?", (chat_id, gtoken)).fetchone()
+    if not owned:
+        title = re.sub(r"\s+", " ", message)[:55] or "New Chat"
+        cur = c.execute("""
+            INSERT INTO chats(user_id,title,created_at,updated_at,guest_token)
+            VALUES(NULL,?,?,?,?)
+        """, (title, now(), now(), gtoken))
+        chat_id = cur.lastrowid
+    c.execute(
+        "INSERT INTO messages(chat_id,role,content,created_at) VALUES(?,?,?,?)",
+        (chat_id, "user", message, now())
+    )
+    c.execute(
+        "INSERT INTO messages(chat_id,role,content,created_at) VALUES(?,?,?,?)",
+        (chat_id, "assistant", answer, now())
+    )
     c.execute("""
-        INSERT INTO usage(user_id,email,question,created_at,plan)
-        VALUES(NULL,NULL,?,?,?)
-    """, (message, now(), "Guest"))
+        INSERT INTO usage(user_id,email,question,created_at,plan,guest_token)
+        VALUES(NULL,NULL,?,?,?,?)
+    """, (message, now(), "Guest", gtoken))
+    c.execute("UPDATE chats SET updated_at=? WHERE id=?", (now(), chat_id))
     c.commit()
     c.close()
 
@@ -383,10 +446,12 @@ def chat(body: ChatBody, request: Request):
     r = JSONResponse({
         "ok": True,
         "answer": answer,
+        "chat_id": chat_id,
         "guest_count": new,
         "guest_remaining": max(0, 4-new)
     })
     r.set_cookie("nirale_guest_count", str(new), httponly=True, samesite="lax", secure=False, max_age=60*60*24*30)
+    r.set_cookie("nirale_guest_id", gtoken, httponly=True, samesite="lax", secure=False, max_age=60*60*24*30)
     return r
 
 @app.get("/api/admin/users")
@@ -441,28 +506,28 @@ html,body{margin:0;width:100%;height:100%;font-family:Arial,Helvetica,sans-serif
 button,input,textarea{font:inherit}
 button{cursor:pointer}
 .app{display:flex;width:100%;height:100dvh;overflow:hidden}
-.sidebar{width:300px;flex:0 0 300px;height:100dvh;background:#f7f7f8;border-right:1px solid #ddd;display:flex;flex-direction:column;transition:width .2s,transform .25s;overflow:hidden;z-index:1000}
+.sidebar{width:300px;flex:0 0 300px;height:100dvh;background:#171717;color:#fff;border-right:1px solid #ddd;display:flex;flex-direction:column;transition:width .2s,transform .25s;overflow:hidden;z-index:1000}
 .sidebar.closed{width:0;flex-basis:0;border:0}
 .sidebar-top{padding:12px}
 .side-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .brand{font-size:19px;font-weight:700}
 .icon-btn{border:0;background:transparent;border-radius:9px;padding:8px;font-size:19px}
-.icon-btn:hover{background:#e5e5e5}
+.icon-btn{color:#fff}.icon-btn:hover{background:#2a2a2a}
 .sidebar-search{display:flex;width:100%;margin:0 0 10px}
-.sidebar-search input{width:100%;height:44px;border:1px solid #d0d0d0;border-radius:12px;padding:0 13px;outline:none;background:#fff;color:#222}
+.sidebar-search input{width:100%;height:44px;border:1px solid #444;border-radius:12px;padding:0 13px;outline:none;background:#222;color:#fff}
 .sidebar-search input:focus{border-color:#999}
-.new-chat{width:100%;height:44px;border:1px solid #ccc;background:#fff;border-radius:11px;text-align:left;padding:0 13px;font-weight:600}
+.new-chat{width:100%;height:44px;border:1px solid #444;background:#222;color:#fff;border-radius:11px;text-align:left;padding:0 13px;font-weight:600}
 .menu-list{padding:4px 10px}
 .menu-item{display:flex;align-items:center;gap:11px;width:100%;height:43px;border:0;background:transparent;border-radius:10px;text-align:left;padding:0 11px;color:#222}
-.menu-item:hover{background:#e8e8e8}
-.recents-title{font-size:12px;color:#777;padding:15px 13px 7px}
+.menu-item{color:#eee}.menu-item:hover{background:#2a2a2a}
+.recents-title{font-size:12px;color:#aaa;padding:15px 13px 7px}
 .recents{overflow:auto;flex:1;padding:0 10px}
 .recent-chat{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 10px;border-radius:9px;cursor:pointer;font-size:14px}
-.recent-chat:hover{background:#e8e8e8}
+.recent-chat:hover{background:#2a2a2a}
 .recent-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.account{border-top:1px solid #ddd;padding:10px}
+.account{border-top:1px solid #333;padding:10px}
 .account-btn{width:100%;display:flex;align-items:center;gap:9px;border:0;background:transparent;border-radius:10px;padding:9px;text-align:left}
-.account-btn:hover{background:#e8e8e8}
+.account-btn{color:#fff}.account-btn:hover{background:#2a2a2a}
 .avatar{width:32px;height:32px;border-radius:50%;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px}
 .account-text{min-width:0;flex:1}
 .account-email{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -502,7 +567,7 @@ button{cursor:pointer}
 .auth.open{display:flex}
 .auth-card{width:100%;max-width:400px;background:#fff;border-radius:18px;padding:24px;box-shadow:0 15px 50px rgba(0,0,0,.25)}
 .auth-card h2{margin-top:0}
-.auth-card input{display:block;width:100%;height:46px;margin:10px 0;border:1px solid #ccc;border-radius:10px;padding:0 12px}
+.password-wrap{position:relative}.auth-card input{display:block;width:100%;height:46px;margin:10px 0;border:1px solid #ccc;border-radius:10px;padding:0 45px 0 12px}.password-toggle{position:absolute;right:8px;top:10px;height:46px;width:38px;border:0;background:transparent;color:#555;font-size:18px}
 .auth-primary{width:100%;height:46px;border:0;border-radius:10px;background:#111;color:#fff;margin-top:8px}
 .auth-switch{text-align:center;margin-top:16px;font-size:14px}
 .auth-switch a{color:#111;font-weight:700;cursor:pointer;text-decoration:underline}
@@ -512,7 +577,7 @@ button{cursor:pointer}
 .pop-btn{width:100%;height:40px;border:0;background:transparent;text-align:left;border-radius:8px;padding:0 10px}
 .pop-btn:hover{background:#eee}
 @media(max-width:700px){
- .sidebar{position:fixed;left:0;top:0;width:300px;max-width:86vw;transform:translateX(-100%);box-shadow:8px 0 30px rgba(0,0,0,.18)}
+ .sidebar{position:fixed;left:0;top:0;width:300px;max-width:86vw;transform:translateX(-100%);background:#171717;box-shadow:8px 0 30px rgba(0,0,0,.35)}
  .sidebar.open{transform:translateX(0)}
  .sidebar.closed{width:300px;flex-basis:auto}
  .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999}
@@ -614,8 +679,11 @@ button{cursor:pointer}
  <div class="auth-card">
    <button class="close-auth" onclick="closeAuth()">×</button>
    <h2 id="authTitle">Login to Nirale AI</h2>
-   <input id="authEmail" type="email" placeholder="Email">
-   <input id="authPassword" type="password" placeholder="Password">
+   <input id="authEmail" type="email" placeholder="Email" autocomplete="email">
+   <div class="password-wrap">
+     <input id="authPassword" type="password" placeholder="Nirale AI password" autocomplete="current-password">
+     <button type="button" class="password-toggle" onclick="togglePassword()" aria-label="Show password">◉</button>
+   </div>
    <button class="auth-primary" onclick="submitAuth()">Continue</button>
    <div id="authMessage" style="color:#b00020;margin-top:9px;font-size:13px"></div>
    <div class="auth-switch" id="authSwitch">
@@ -708,6 +776,12 @@ function switchAuth(mode){
     mode === "login"
       ? `Don't have an account? <a onclick="switchAuth('signup')">Create account</a>`
       : `Already have an account? <a onclick="switchAuth('login')">Login</a>`;
+}
+function togglePassword(){
+  const p=document.getElementById("authPassword");
+  const b=document.querySelector(".password-toggle");
+  if(p.type === "password"){ p.type="text"; b.textContent="◉"; b.title="Hide password"; }
+  else { p.type="password"; b.textContent="◉"; b.title="Show password"; }
 }
 async function submitAuth(){
   const email = document.getElementById("authEmail").value.trim();
