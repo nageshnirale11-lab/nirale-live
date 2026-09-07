@@ -147,6 +147,7 @@ Support Kannada, English, Hindi, Telugu, Tamil, Malayalam, Marathi, Bengali, Guj
 Do not claim that Nirale AI was created by Google or by Nirale AI itself. If asked who created you, the application handles that answer separately.
 Use Markdown when useful. For programming code, use fenced code blocks with the correct language.
 Do not expose passwords, API keys, session tokens or private user data.
+For terminal/Linux commands, always give exact copy-paste-ready commands in fenced code blocks and clearly state the folder to run them in. Never claim that a browser can automatically execute commands on the user's Kali terminal.
 """
 
 def ask_gemini(message, history=None):
@@ -484,7 +485,7 @@ button{cursor:pointer}
 .msg pre{position:relative;overflow:auto;background:#111;color:#eee;padding:14px;border-radius:10px}
 .msg code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .code-wrap{position:relative}
-.copy-code{position:absolute;right:8px;top:8px;border:1px solid #555;background:#222;color:#fff;border-radius:6px;padding:5px 8px;font-size:12px}
+.code-actions{position:absolute;right:8px;top:8px;display:flex;gap:5px}.copy-code,.download-code{border:1px solid #555;background:#222;color:#fff;border-radius:6px;padding:5px 8px;font-size:12px}
 .thinking{color:#777;font-style:italic;padding:10px 5px}
 .footer{padding:10px 14px calc(10px + env(safe-area-inset-bottom));background:#fff}
 .composer{max-width:850px;margin:auto;border:1px solid #ccc;border-radius:18px;display:flex;align-items:flex-end;gap:6px;padding:7px;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.05)}
@@ -623,9 +624,20 @@ button{cursor:pointer}
  </div>
 </div>
 
+<div id="adminModal" class="auth">
+ <div class="auth-card" style="max-width:900px;max-height:90dvh;overflow:auto">
+   <button class="close-auth" onclick="closeAdmin()">×</button>
+   <h2>👑 Admin Dashboard</h2>
+   <div id="adminStats" style="margin:10px 0;font-weight:600"></div>
+   <h3>Users</h3><div id="adminUsers" style="overflow:auto"></div>
+   <h3>Recent Activity</h3><div id="adminActivity" style="overflow:auto"></div>
+ </div>
+</div>
+
 <div id="accountPop" class="account-pop">
   <button class="pop-btn" onclick="openAuth('login')">Login</button>
   <button class="pop-btn" onclick="openAuth('signup')">Create account</button>
+  <button id="adminBtn" class="pop-btn" style="display:none" onclick="openAdmin()">👑 Admin Dashboard</button>
   <button class="pop-btn" onclick="logout()">Logout</button>
 </div>
 
@@ -728,10 +740,12 @@ async function loadMe(){
     email.textContent=d.email;
     plan.textContent=d.plan;
     avatar.textContent=(d.email[0]||"N").toUpperCase();
+    if(d.email){ fetch("/api/admin/stats").then(r=>r.json()).then(x=>{ document.getElementById("adminBtn").style.display = x.ok ? "block" : "none"; }).catch(()=>{}); }
   }else{
     email.textContent="Guest";
     plan.textContent="4 free questions";
     avatar.textContent="G";
+    document.getElementById("adminBtn").style.display = "none";
   }
 }
 async function loadRecents(){
@@ -772,11 +786,30 @@ function addMessage(role,text,scroll=true){
       try{hljs.highlightElement(block)}catch(e){}
       const pre=block.parentElement;
       pre.classList.add("code-wrap");
-      const b=document.createElement("button");
-      b.className="copy-code";
-      b.textContent="Copy";
-      b.onclick=()=>navigator.clipboard.writeText(block.innerText);
-      pre.appendChild(b);
+      const actions=document.createElement("div");
+      actions.className="code-actions";
+      const copy=document.createElement("button");
+      copy.className="copy-code";
+      copy.textContent="Copy";
+      copy.onclick=async()=>{
+        await navigator.clipboard.writeText(block.innerText);
+        copy.textContent="Copied";
+        setTimeout(()=>copy.textContent="Copy",1200);
+      };
+      const download=document.createElement("button");
+      download.className="download-code";
+      download.textContent="Download";
+      download.onclick=()=>{
+        const blob=new Blob([block.innerText],{type:"text/plain;charset=utf-8"});
+        const a=document.createElement("a");
+        a.href=URL.createObjectURL(blob);
+        a.download="nirale-code.txt";
+        a.click();
+        setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+      };
+      actions.appendChild(copy);
+      actions.appendChild(download);
+      pre.appendChild(actions);
     });
   }
   row.appendChild(msg);
@@ -845,6 +878,22 @@ async function sendMessage(){
     addMessage("assistant","Connection error. Please try again.");
   }
 }
+async function openAdmin(){
+  document.getElementById("accountPop").classList.remove("open");
+  const modal=document.getElementById("adminModal");
+  modal.classList.add("open");
+  const [st,us,ac]=await Promise.all([
+    fetch("/api/admin/stats").then(r=>r.json()),
+    fetch("/api/admin/users").then(r=>r.json()),
+    fetch("/api/admin/activity").then(r=>r.json())
+  ]);
+  if(!st.ok){ document.getElementById("adminStats").textContent="Admin access denied."; return; }
+  document.getElementById("adminStats").textContent=`Users: ${st.users} | Messages: ${st.messages}`;
+  document.getElementById("adminUsers").innerHTML=(us.users||[]).map(x=>`<div style="padding:9px;border-bottom:1px solid #eee"><b>${escapeHtml(x.email)}</b> · ${escapeHtml(x.plan)} · Messages: ${escapeHtml(String((ac.activity||[]).filter(a=>a.email===x.email).length))}<br><small>Created: ${escapeHtml(x.created_at)} · Last active: ${escapeHtml(x.last_active)}</small></div>`).join("") || "No users";
+  document.getElementById("adminActivity").innerHTML=(ac.activity||[]).map(x=>`<div style="padding:9px;border-bottom:1px solid #eee"><b>${escapeHtml(x.email||"Guest")}</b><br>${escapeHtml(x.question)}<br><small>${escapeHtml(x.created_at)} · ${escapeHtml(x.plan)}</small></div>`).join("") || "No activity";
+}
+function closeAdmin(){document.getElementById("adminModal").classList.remove("open");}
+
 function voiceInput(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){
