@@ -21,10 +21,20 @@ import google.generativeai as genai
 APP_NAME = "Nirale AI"
 DB_FILE = "nirale.db"
 
-API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+API_KEY = (
+    os.getenv("GOOGLE_API_KEY")
+    or os.getenv("GEMINI_API_KEY")
+)
 
-OWNER_EMAIL = os.getenv("OWNER_EMAIL", "").strip().lower()
+MODEL_NAME = os.getenv(
+    "GEMINI_MODEL",
+    "gemini-3.6-flash"
+)
+
+OWNER_EMAIL = os.getenv(
+    "OWNER_EMAIL",
+    ""
+).strip().lower()
 
 if API_KEY:
     genai.configure(api_key=API_KEY)
@@ -36,14 +46,15 @@ app = FastAPI(title=APP_NAME)
 # DATABASE
 # ============================================================
 
-def get_db():
+def db():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
-    conn = get_db()
+
+    conn = db()
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -69,7 +80,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS chats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
-            title TEXT DEFAULT 'New Chat',
+            title TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -103,16 +114,16 @@ init_db()
 
 
 # ============================================================
-# PASSWORD HASHING
+# PASSWORD
 # ============================================================
 
-def hash_password(password: str, salt: Optional[str] = None):
+def hash_password(password, salt=None):
 
     if salt is None:
         salt = secrets.token_hex(16)
 
     hashed = hashlib.scrypt(
-        password.encode("utf-8"),
+        password.encode(),
         salt=bytes.fromhex(salt),
         n=16384,
         r=8,
@@ -123,9 +134,16 @@ def hash_password(password: str, salt: Optional[str] = None):
     return hashed.hex(), salt
 
 
-def verify_password(password: str, password_hash: str, salt: str):
+def verify_password(
+    password,
+    password_hash,
+    salt
+):
 
-    new_hash, _ = hash_password(password, salt)
+    new_hash, _ = hash_password(
+        password,
+        salt
+    )
 
     return secrets.compare_digest(
         new_hash,
@@ -137,19 +155,21 @@ def verify_password(password: str, password_hash: str, salt: str):
 # SESSION
 # ============================================================
 
-def get_current_user(request: Request):
+def current_user(request: Request):
 
-    token = request.cookies.get("nirale_session")
+    token = request.cookies.get(
+        "nirale_session"
+    )
 
     if not token:
         return None
 
-    conn = get_db()
+    conn = db()
 
     user = conn.execute("""
         SELECT users.*
         FROM users
-        INNER JOIN sessions
+        JOIN sessions
         ON sessions.user_id = users.id
         WHERE sessions.token = ?
     """, (token,)).fetchone()
@@ -161,7 +181,7 @@ def get_current_user(request: Request):
 
 def update_last_active(user_id):
 
-    conn = get_db()
+    conn = db()
 
     conn.execute("""
         UPDATE users
@@ -177,26 +197,21 @@ def update_last_active(user_id):
 
 
 # ============================================================
-# REQUEST MODELS
+# MODELS
 # ============================================================
 
-class SignupRequest(BaseModel):
+class AuthData(BaseModel):
     email: str
     password: str
 
 
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class ChatRequest(BaseModel):
-    message: str
+class ChatData(BaseModel):
+    message: str = ""
     chat_id: Optional[int] = None
     image_data: Optional[str] = None
 
 
-class UpgradeRequest(BaseModel):
+class UpgradeData(BaseModel):
     plan: str
 
 
@@ -204,11 +219,11 @@ class UpgradeRequest(BaseModel):
 # CREATOR
 # ============================================================
 
-def is_creator_question(message: str):
+def creator_question(text):
 
-    text = message.lower().strip()
+    t = text.lower().strip()
 
-    keywords = [
+    words = [
         "who created you",
         "who made you",
         "who is your creator",
@@ -225,14 +240,63 @@ def is_creator_question(message: str):
         "ನಿನ್ನ creator ಯಾರು",
         "ನಿನ್ನನ್ನು ಯಾರು ರಚಿಸಿದ್ದಾರೆ",
         "ನಿನ್ನನ್ನು ಯಾರು ಮಾಡಿದರು",
-        "ನಿನ್ನನ್ನು ಯಾರು ಅಭಿವೃದ್ಧಿಪಡಿಸಿದರು",
-        "ನಿಮ್ಮ creator ಯಾರು"
+        "ನಿನ್ನನ್ನು ಯಾರು ಅಭಿವೃದ್ಧಿಪಡಿಸಿದರು"
     ]
 
-    return any(word in text for word in keywords)
+    return any(
+        word in t
+        for word in words
+    )
 
 
-CREATOR_REPLY = "ನನ್ನನ್ನು Nagesh Nirale ಅವರು ರಚಿಸಿದ್ದಾರೆ."
+CREATOR_REPLY = (
+    "ನನ್ನನ್ನು Nagesh Nirale ಅವರು ರಚಿಸಿದ್ದಾರೆ."
+)
+
+
+# ============================================================
+# LANGUAGE
+# ============================================================
+
+def thinking_text(message):
+
+    if re.search(
+        r"[\u0C80-\u0CFF]",
+        message
+    ):
+        return "ಯೋಚಿಸುತ್ತಿದೆ..."
+
+    if re.search(
+        r"[\u0900-\u097F]",
+        message
+    ):
+        return "सोच रहा हूँ..."
+
+    if re.search(
+        r"[\u0C00-\u0C7F]",
+        message
+    ):
+        return "ఆలోచిస్తోంది..."
+
+    if re.search(
+        r"[\u0B80-\u0BFF]",
+        message
+    ):
+        return "யோசிக்கிறது..."
+
+    if re.search(
+        r"[\u0D00-\u0D7F]",
+        message
+    ):
+        return "ചിന്തിക്കുന്നു..."
+
+    if re.search(
+        r"[\u0C00-\u0C7F]",
+        message
+    ):
+        return "ಆಲೋಚಿಸುತ್ತಿದೆ..."
+
+    return "Thinking..."
 
 
 # ============================================================
@@ -242,48 +306,55 @@ CREATOR_REPLY = "ನನ್ನನ್ನು Nagesh Nirale ಅವರು ರಚಿ�
 SYSTEM_PROMPT = """
 You are Nirale AI.
 
-You are a helpful, intelligent and friendly multilingual AI assistant.
+You are a helpful multilingual AI assistant.
 
-Support the user's language naturally.
+IMPORTANT LANGUAGE RULE:
 
-You can answer in:
-Kannada,
-English,
-Hindi,
-Telugu,
-Tamil,
-Malayalam,
-Marathi,
-Bengali,
-Gujarati,
-Punjabi,
-Urdu,
-and other languages supported by the AI model.
+Reply in the SAME LANGUAGE that the user uses.
 
-Rules:
+If the user writes Kannada, reply in Kannada.
 
-1. Answer the user's actual question.
-2. Do not unnecessarily ask the user to login.
-3. Give useful and clear answers.
-4. If the user asks for programming code, provide working code.
-5. Use Markdown when useful.
-6. Put programming code inside fenced code blocks.
-7. Do not expose API keys, passwords or secret tokens.
-8. Do not pretend that an action was completed when it was not.
+If the user writes English, reply in English.
+
+If the user writes Hindi, reply in Hindi.
+
+If the user writes Telugu, reply in Telugu.
+
+If the user writes Tamil, reply in Tamil.
+
+If the user writes Malayalam, reply in Malayalam.
+
+If the user mixes languages, naturally follow the language
+used by the user.
+
+Do not unnecessarily change the user's language.
+
+You can answer questions about programming, cybersecurity,
+Linux, technology, education, general knowledge and other
+normal topics.
+
+Use Markdown when useful.
+
+Put programming code inside fenced code blocks.
+
+Never reveal passwords, API keys, session tokens or secrets.
+
+Never claim that a real-world action was completed when it
+was not completed.
 """
 
 
-def generate_ai_reply(
-    message: str,
-    image_data: Optional[str] = None
+def generate_reply(
+    message,
+    image_data=None
 ):
 
-    if is_creator_question(message):
+    if creator_question(message):
         return CREATOR_REPLY
 
     if not API_KEY:
         raise RuntimeError(
-            "GOOGLE_API_KEY or GEMINI_API_KEY is not configured in the server."
+            "GOOGLE_API_KEY or GEMINI_API_KEY is missing."
         )
 
     model = genai.GenerativeModel(
@@ -291,16 +362,24 @@ def generate_ai_reply(
         system_instruction=SYSTEM_PROMPT
     )
 
-    contents = [message]
+    contents = []
+
+    if message:
+        contents.append(message)
 
     if image_data:
 
         try:
 
             if "," in image_data:
-                image_data = image_data.split(",", 1)[1]
+                image_data = image_data.split(
+                    ",",
+                    1
+                )[1]
 
-            image_bytes = base64.b64decode(image_data)
+            image_bytes = base64.b64decode(
+                image_data
+            )
 
             contents.append({
                 "mime_type": "image/jpeg",
@@ -310,21 +389,27 @@ def generate_ai_reply(
         except Exception:
             pass
 
-    response = model.generate_content(contents)
+    response = model.generate_content(
+        contents
+    )
 
-    text = getattr(response, "text", None)
+    text = getattr(
+        response,
+        "text",
+        None
+    )
 
     if not text:
-        return "ಕ್ಷಮಿಸಿ, ಈಗ answer generate ಆಗಲಿಲ್ಲ."
+        return "Sorry, answer generate ಆಗಲಿಲ್ಲ."
 
     return text
 
 
 # ============================================================
-# GUEST QUESTION COUNTER
+# GUEST COUNTER
 # ============================================================
 
-def get_guest_count(request: Request):
+def guest_count(request):
 
     value = request.cookies.get(
         "nirale_guest_count",
@@ -342,7 +427,7 @@ def get_guest_count(request: Request):
 # ============================================================
 
 @app.post("/api/signup")
-async def signup(data: SignupRequest):
+async def signup(data: AuthData):
 
     email = data.email.strip().lower()
     password = data.password
@@ -353,18 +438,20 @@ async def signup(data: SignupRequest):
     ):
         raise HTTPException(
             400,
-            "Valid email address enter madi."
+            "Valid email enter madi."
         )
 
     if len(password) < 6:
         raise HTTPException(
             400,
-            "Password ಕನಿಷ್ಠ 6 characters ಇರಬೇಕು."
+            "Password minimum 6 characters ಇರಬೇಕು."
         )
 
-    password_hash, salt = hash_password(password)
+    password_hash, salt = hash_password(
+        password
+    )
 
-    conn = get_db()
+    conn = db()
 
     try:
 
@@ -413,7 +500,7 @@ async def signup(data: SignupRequest):
 
         raise HTTPException(
             400,
-            "ಈ email ಈಗಾಗಲೇ registered ಆಗಿದೆ."
+            "ಈ email ಈಗಾಗಲೇ registered ಇದೆ."
         )
 
     conn.close()
@@ -424,12 +511,12 @@ async def signup(data: SignupRequest):
     })
 
     response.set_cookie(
-        key="nirale_session",
-        value=token,
+        "nirale_session",
+        token,
         httponly=True,
         samesite="lax",
         secure=False,
-        max_age=60 * 60 * 24 * 30
+        max_age=2592000
     )
 
     response.delete_cookie(
@@ -444,11 +531,11 @@ async def signup(data: SignupRequest):
 # ============================================================
 
 @app.post("/api/login")
-async def login(data: LoginRequest):
+async def login(data: AuthData):
 
     email = data.email.strip().lower()
 
-    conn = get_db()
+    conn = db()
 
     user = conn.execute("""
         SELECT *
@@ -459,7 +546,6 @@ async def login(data: LoginRequest):
     conn.close()
 
     if not user:
-
         raise HTTPException(
             401,
             "Email ಅಥವಾ password ತಪ್ಪಾಗಿದೆ."
@@ -470,7 +556,6 @@ async def login(data: LoginRequest):
         user["password_hash"],
         user["salt"]
     ):
-
         raise HTTPException(
             401,
             "Email ಅಥವಾ password ತಪ್ಪಾಗಿದೆ."
@@ -478,7 +563,7 @@ async def login(data: LoginRequest):
 
     token = secrets.token_urlsafe(48)
 
-    conn = get_db()
+    conn = db()
 
     conn.execute("""
         INSERT INTO sessions
@@ -513,12 +598,12 @@ async def login(data: LoginRequest):
     })
 
     response.set_cookie(
-        key="nirale_session",
-        value=token,
+        "nirale_session",
+        token,
         httponly=True,
         samesite="lax",
         secure=False,
-        max_age=60 * 60 * 24 * 30
+        max_age=2592000
     )
 
     response.delete_cookie(
@@ -541,10 +626,10 @@ async def logout(request: Request):
 
     if token:
 
-        conn = get_db()
+        conn = db()
 
         conn.execute(
-            "DELETE FROM sessions WHERE token = ?",
+            "DELETE FROM sessions WHERE token=?",
             (token,)
         )
 
@@ -563,16 +648,15 @@ async def logout(request: Request):
 
 
 # ============================================================
-# CURRENT USER
+# ME
 # ============================================================
 
 @app.get("/api/me")
 async def me(request: Request):
 
-    user = get_current_user(request)
+    user = current_user(request)
 
     if not user:
-
         return {
             "logged_in": False
         }
@@ -598,41 +682,38 @@ async def me(request: Request):
 @app.post("/api/chat")
 async def chat(
     request: Request,
-    data: ChatRequest
+    data: ChatData
 ):
 
     message = data.message.strip()
 
     if not message and not data.image_data:
-
         raise HTTPException(
             400,
             "Message empty ide."
         )
 
-    user = get_current_user(request)
+    user = current_user(request)
+
 
     # ========================================================
-    # GUEST MODE
-    # First 4 questions are allowed without login.
+    # GUEST
     # ========================================================
 
     if not user:
 
-        guest_count = get_guest_count(
-            request
-        )
+        count = guest_count(request)
 
-        if guest_count >= 4:
+        if count >= 4:
 
             raise HTTPException(
-                status_code=401,
-                detail="FREE_LOGIN_REQUIRED"
+                401,
+                "LOGIN_REQUIRED"
             )
 
         try:
 
-            reply = generate_ai_reply(
+            reply = generate_reply(
                 message,
                 data.image_data
             )
@@ -641,10 +722,10 @@ async def chat(
 
             raise HTTPException(
                 500,
-                f"Gemini error: {str(e)}"
+                str(e)
             )
 
-        new_count = guest_count + 1
+        new_count = count + 1
 
         response = JSONResponse({
             "ok": True,
@@ -654,48 +735,47 @@ async def chat(
                 0,
                 4 - new_count
             ),
-            "login_required_after": (
-                new_count >= 4
-            ),
             "reply": reply
         })
 
         response.set_cookie(
-            key="nirale_guest_count",
-            value=str(new_count),
+            "nirale_guest_count",
+            str(new_count),
             httponly=True,
             samesite="lax",
             secure=False,
-            max_age=60 * 60 * 24
+            max_age=86400
         )
 
         return response
 
+
     # ========================================================
-    # LOGGED IN MODE
+    # LOGGED IN
     # ========================================================
 
     update_last_active(
         user["id"]
     )
 
-    conn = get_db()
+    conn = db()
 
     chat_id = data.chat_id
 
+
     if chat_id:
 
-        existing_chat = conn.execute("""
+        found = conn.execute("""
             SELECT *
             FROM chats
-            WHERE id = ?
-            AND user_id = ?
+            WHERE id=?
+            AND user_id=?
         """, (
             chat_id,
             user["id"]
         )).fetchone()
 
-        if not existing_chat:
+        if not found:
 
             conn.close()
 
@@ -730,6 +810,7 @@ async def chat(
 
         chat_id = cur.lastrowid
 
+
     conn.execute("""
         INSERT INTO messages
         (
@@ -744,6 +825,7 @@ async def chat(
         message or "[Image]",
         datetime.now().isoformat()
     ))
+
 
     conn.execute("""
         INSERT INTO usage
@@ -764,9 +846,10 @@ async def chat(
     conn.commit()
     conn.close()
 
+
     try:
 
-        reply = generate_ai_reply(
+        reply = generate_reply(
             message,
             data.image_data
         )
@@ -775,10 +858,11 @@ async def chat(
 
         raise HTTPException(
             500,
-            f"Gemini error: {str(e)}"
+            str(e)
         )
 
-    conn = get_db()
+
+    conn = db()
 
     conn.execute("""
         INSERT INTO messages
@@ -795,10 +879,11 @@ async def chat(
         datetime.now().isoformat()
     ))
 
+
     conn.execute("""
         UPDATE chats
-        SET updated_at = ?
-        WHERE id = ?
+        SET updated_at=?
+        WHERE id=?
     """, (
         datetime.now().isoformat(),
         chat_id
@@ -806,6 +891,7 @@ async def chat(
 
     conn.commit()
     conn.close()
+
 
     return {
         "ok": True,
@@ -820,9 +906,9 @@ async def chat(
 # ============================================================
 
 @app.get("/api/chats")
-async def get_chats(request: Request):
+async def chats(request: Request):
 
-    user = get_current_user(request)
+    user = current_user(request)
 
     if not user:
 
@@ -831,16 +917,12 @@ async def get_chats(request: Request):
             "Login madi."
         )
 
-    conn = get_db()
+    conn = db()
 
     rows = conn.execute("""
-        SELECT
-            id,
-            title,
-            created_at,
-            updated_at
+        SELECT *
         FROM chats
-        WHERE user_id = ?
+        WHERE user_id=?
         ORDER BY updated_at DESC
     """, (
         user["id"],
@@ -857,12 +939,12 @@ async def get_chats(request: Request):
 
 
 @app.get("/api/chats/{chat_id}")
-async def get_chat(
+async def chat_history(
     chat_id: int,
     request: Request
 ):
 
-    user = get_current_user(request)
+    user = current_user(request)
 
     if not user:
 
@@ -871,19 +953,19 @@ async def get_chat(
             "Login madi."
         )
 
-    conn = get_db()
+    conn = db()
 
-    chat = conn.execute("""
+    chat_row = conn.execute("""
         SELECT *
         FROM chats
-        WHERE id = ?
-        AND user_id = ?
+        WHERE id=?
+        AND user_id=?
     """, (
         chat_id,
         user["id"]
     )).fetchone()
 
-    if not chat:
+    if not chat_row:
 
         conn.close()
 
@@ -893,12 +975,9 @@ async def get_chat(
         )
 
     messages = conn.execute("""
-        SELECT
-            role,
-            content,
-            created_at
+        SELECT *
         FROM messages
-        WHERE chat_id = ?
+        WHERE chat_id=?
         ORDER BY id ASC
     """, (
         chat_id,
@@ -907,21 +986,21 @@ async def get_chat(
     conn.close()
 
     return {
-        "chat": dict(chat),
+        "chat": dict(chat_row),
         "messages": [
-            dict(row)
-            for row in messages
+            dict(x)
+            for x in messages
         ]
     }
 
 
 @app.delete("/api/chats/{chat_id}")
-async def delete_chat(
+async def remove_chat(
     chat_id: int,
     request: Request
 ):
 
-    user = get_current_user(request)
+    user = current_user(request)
 
     if not user:
 
@@ -930,17 +1009,19 @@ async def delete_chat(
             "Login madi."
         )
 
-    conn = get_db()
+    conn = db()
 
-    conn.execute(
-        "DELETE FROM messages WHERE chat_id = ?",
-        (chat_id,)
-    )
+    conn.execute("""
+        DELETE FROM messages
+        WHERE chat_id=?
+    """, (
+        chat_id,
+    ))
 
     conn.execute("""
         DELETE FROM chats
-        WHERE id = ?
-        AND user_id = ?
+        WHERE id=?
+        AND user_id=?
     """, (
         chat_id,
         user["id"]
@@ -959,21 +1040,24 @@ async def delete_chat(
 # ============================================================
 
 @app.get("/api/plans")
-async def plans():
+async def get_plans():
 
     return {
         "plans": [
             {
                 "name": "Free",
-                "price": 0
+                "price": 0,
+                "description": "Basic access"
             },
             {
                 "name": "Plus",
-                "price": 499
+                "price": 499,
+                "description": "More AI usage"
             },
             {
                 "name": "Pro",
-                "price": 999
+                "price": 999,
+                "description": "Higher usage"
             }
         ]
     }
@@ -982,10 +1066,10 @@ async def plans():
 @app.post("/api/upgrade")
 async def upgrade(
     request: Request,
-    data: UpgradeRequest
+    data: UpgradeData
 ):
 
-    user = get_current_user(request)
+    user = current_user(request)
 
     if not user:
 
@@ -1007,12 +1091,12 @@ async def upgrade(
 
     if data.plan == "Free":
 
-        conn = get_db()
+        conn = db()
 
         conn.execute("""
             UPDATE users
-            SET plan = 'Free'
-            WHERE id = ?
+            SET plan='Free'
+            WHERE id=?
         """, (
             user["id"],
         ))
@@ -1028,9 +1112,8 @@ async def upgrade(
     return {
         "ok": False,
         "payment_required": True,
-        "plan": data.plan,
         "message":
-            "Payment gateway connect madida mele paid plan activate agutte."
+            "Payment gateway connect madbeku."
     }
 
 
@@ -1040,24 +1123,21 @@ async def upgrade(
 
 def require_admin(request: Request):
 
-    user = get_current_user(request)
+    user = current_user(request)
 
     if not user:
-
         raise HTTPException(
             401,
             "Login madi."
         )
 
     if not OWNER_EMAIL:
-
         raise HTTPException(
             403,
-            "OWNER_EMAIL configure madi."
+            "OWNER_EMAIL not configured."
         )
 
     if user["email"].lower() != OWNER_EMAIL:
-
         raise HTTPException(
             403,
             "Admin access denied."
@@ -1067,39 +1147,43 @@ def require_admin(request: Request):
 
 
 @app.get("/api/admin/stats")
-async def admin_stats(request: Request):
+async def admin_stats(
+    request: Request
+):
 
     require_admin(request)
 
-    conn = get_db()
+    conn = db()
 
     users = conn.execute(
-        "SELECT COUNT(*) AS c FROM users"
-    ).fetchone()["c"]
-
-    messages = conn.execute(
-        "SELECT COUNT(*) AS c FROM usage"
+        "SELECT COUNT(*) c FROM users"
     ).fetchone()["c"]
 
     chats = conn.execute(
-        "SELECT COUNT(*) AS c FROM chats"
+        "SELECT COUNT(*) c FROM chats"
+    ).fetchone()["c"]
+
+    messages = conn.execute(
+        "SELECT COUNT(*) c FROM usage"
     ).fetchone()["c"]
 
     conn.close()
 
     return {
         "users": users,
-        "messages": messages,
-        "chats": chats
+        "chats": chats,
+        "messages": messages
     }
 
 
 @app.get("/api/admin/users")
-async def admin_users(request: Request):
+async def admin_users(
+    request: Request
+):
 
     require_admin(request)
 
-    conn = get_db()
+    conn = db()
 
     rows = conn.execute("""
         SELECT
@@ -1116,18 +1200,20 @@ async def admin_users(request: Request):
 
     return {
         "users": [
-            dict(row)
-            for row in rows
+            dict(x)
+            for x in rows
         ]
     }
 
 
 @app.get("/api/admin/activity")
-async def admin_activity(request: Request):
+async def admin_activity(
+    request: Request
+):
 
     require_admin(request)
 
-    conn = get_db()
+    conn = db()
 
     rows = conn.execute("""
         SELECT
@@ -1137,7 +1223,7 @@ async def admin_activity(request: Request):
             usage.created_at
         FROM usage
         JOIN users
-        ON users.id = usage.user_id
+        ON users.id=usage.user_id
         ORDER BY usage.id DESC
         LIMIT 200
     """).fetchall()
@@ -1146,8 +1232,8 @@ async def admin_activity(request: Request):
 
     return {
         "activity": [
-            dict(row)
-            for row in rows
+            dict(x)
+            for x in rows
         ]
     }
 
@@ -1158,6 +1244,7 @@ async def admin_activity(request: Request):
 
 HTML = r"""
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
@@ -1166,33 +1253,54 @@ HTML = r"""
 
 <meta
 name="viewport"
-content="width=device-width, initial-scale=1.0"
+content="width=device-width,initial-scale=1.0"
 >
 
 <title>✨ Nirale AI</title>
 
+
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
 
 <link
 rel="stylesheet"
-href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css"
+href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css"
 >
+
 
 <script
 src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js">
 </script>
 
+
 <style>
+
+/* =========================================================
+   RESET
+========================================================= */
 
 * {
     box-sizing: border-box;
 }
 
+html,
 body {
+    width: 100%;
+    height: 100%;
     margin: 0;
-    font-family: Arial, Helvetica, sans-serif;
-    color: #202124;
-    background: #fff;
+}
+
+body {
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
+
+    background: #000;
+
+    color: #fff;
+
+    overflow: hidden;
 }
 
 button,
@@ -1201,83 +1309,12 @@ textarea {
     font: inherit;
 }
 
+button {
+    cursor: pointer;
+}
+
 .hidden {
     display: none !important;
-}
-
-
-/* =========================================================
-   AUTH
-========================================================= */
-
-#authScreen {
-    position: fixed;
-    inset: 0;
-    z-index: 200;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    background: #fff;
-    padding: 20px;
-}
-
-.auth-card {
-    width: 100%;
-    max-width: 420px;
-    padding: 32px;
-    border: 1px solid #e5e7eb;
-    border-radius: 22px;
-    box-shadow: 0 15px 45px rgba(0,0,0,.08);
-}
-
-.auth-logo {
-    text-align: center;
-    font-size: 30px;
-    font-weight: 700;
-    margin-bottom: 8px;
-}
-
-.auth-description {
-    text-align: center;
-    color: #777;
-    margin-bottom: 25px;
-}
-
-.auth-card input {
-    width: 100%;
-    border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 14px;
-    margin-bottom: 12px;
-    outline: none;
-}
-
-.auth-card input:focus {
-    border-color: #555;
-}
-
-.primary-button {
-    width: 100%;
-    border: none;
-    border-radius: 12px;
-    padding: 14px;
-    color: white;
-    background: #111827;
-    cursor: pointer;
-    font-weight: 600;
-}
-
-.auth-switch {
-    text-align: center;
-    margin-top: 18px;
-    color: #666;
-}
-
-.auth-switch button {
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    font-weight: 600;
 }
 
 
@@ -1286,86 +1323,358 @@ textarea {
 ========================================================= */
 
 #app {
+    width: 100%;
     height: 100vh;
+
     display: flex;
-    overflow: hidden;
+
+    background: #000;
 }
+
+
+/* =========================================================
+   SIDEBAR
+========================================================= */
 
 .sidebar {
-    width: 270px;
+    width: 300px;
+
+    height: 100vh;
+
     flex-shrink: 0;
-    background: #fafafa;
-    border-right: 1px solid #e5e7eb;
+
+    background: #0b0b0b;
+
+    border-right:
+        1px solid #292929;
+
     display: flex;
+
     flex-direction: column;
+
+    overflow: hidden;
+
+    transition:
+        width .2s ease,
+        transform .2s ease;
 }
 
-.sidebar-top {
-    padding: 14px;
+
+.sidebar-header {
+    height: 66px;
+
+    display: flex;
+
+    align-items: center;
+
+    padding:
+        0 14px;
+
+    gap: 7px;
 }
 
-.new-chat {
-    width: 100%;
-    padding: 12px;
-    border: 1px solid #ddd;
-    border-radius: 12px;
-    background: white;
-    cursor: pointer;
-    text-align: left;
+
+.sidebar-logo {
+    flex: 1;
+
+    font-size: 19px;
+
+    font-weight: 700;
 }
 
-.side-button {
-    margin-top: 8px;
-    padding: 12px;
+
+.sidebar-top-button {
+    width: 40px;
+    height: 40px;
+
+    border: 0;
+
     border-radius: 10px;
-    cursor: pointer;
+
+    color: #fff;
+
+    background: transparent;
+
+    font-size: 22px;
 }
 
-.side-button:hover {
-    background: #ededed;
+
+.sidebar-top-button:hover {
+    background: #222;
 }
+
+
+/* =========================================================
+   MENU
+========================================================= */
+
+.sidebar-menu {
+    padding:
+        5px 10px;
+}
+
+
+.menu-item {
+    width: 100%;
+
+    min-height: 48px;
+
+    display: flex;
+
+    align-items: center;
+
+    gap: 13px;
+
+    padding:
+        9px 12px;
+
+    margin-bottom: 2px;
+
+    border: 0;
+
+    border-radius: 11px;
+
+    background: transparent;
+
+    color: #fff;
+
+    text-align: left;
+
+    font-size: 16px;
+}
+
+
+.menu-item:hover {
+    background: #202020;
+}
+
+
+.menu-item.active {
+    background: #1f1f1f;
+}
+
+
+.menu-icon {
+    width: 26px;
+
+    text-align: center;
+
+    font-size: 20px;
+}
+
+
+.menu-text {
+    flex: 1;
+}
+
+
+.menu-plus {
+    font-size: 24px;
+
+    color: #aaa;
+}
+
+
+.more-content {
+    display: none;
+}
+
+
+.more-content.open {
+    display: block;
+}
+
+
+/* =========================================================
+   RECENTS
+========================================================= */
+
+.recents-header {
+    display: flex;
+
+    align-items: center;
+
+    padding:
+        18px 15px 7px;
+
+    color: #999;
+
+    font-size: 14px;
+
+    font-weight: 600;
+}
+
 
 .recents-title {
-    padding: 15px;
-    color: #777;
-    font-size: 12px;
-    text-transform: uppercase;
+    flex: 1;
 }
+
+
+.small-action {
+    border: 0;
+
+    background: transparent;
+
+    color: #aaa;
+
+    font-size: 18px;
+
+    padding: 4px;
+}
+
+
+.small-action:hover {
+    color: #fff;
+}
+
 
 .recents {
     flex: 1;
+
     overflow-y: auto;
-    padding: 0 10px;
+
+    padding:
+        0 9px;
 }
 
-.recent {
-    padding: 10px;
+
+.recent-row {
+    width: 100%;
+
+    display: flex;
+
+    align-items: center;
+
+    gap: 5px;
+
     border-radius: 9px;
-    cursor: pointer;
+
+    padding:
+        8px 8px;
+
+    color: #eee;
+
+    background: transparent;
+}
+
+
+.recent-row:hover {
+    background: #1d1d1d;
+}
+
+
+.recent-title {
+    flex: 1;
+
+    min-width: 0;
+
     white-space: nowrap;
+
     overflow: hidden;
+
     text-overflow: ellipsis;
+
+    font-size: 14px;
+
+    text-align: left;
 }
 
-.recent:hover {
-    background: #eee;
+
+.recent-options {
+    border: 0;
+
+    background: transparent;
+
+    color: #999;
+
+    font-size: 16px;
 }
 
-.account-area {
-    padding: 14px;
-    border-top: 1px solid #ddd;
+
+/* =========================================================
+   ACCOUNT
+========================================================= */
+
+.sidebar-account {
+    border-top:
+        1px solid #292929;
+
+    padding: 10px;
 }
 
-.account-email {
-    font-size: 13px;
+
+.account-button {
+    width: 100%;
+
+    display: flex;
+
+    align-items: center;
+
+    gap: 10px;
+
+    padding: 8px;
+
+    border: 0;
+
+    border-radius: 10px;
+
+    background: transparent;
+
+    color: #fff;
+
+    text-align: left;
+}
+
+
+.account-button:hover {
+    background: #202020;
+}
+
+
+.avatar {
+    width: 38px;
+    height: 38px;
+
+    flex-shrink: 0;
+
+    display: flex;
+
+    align-items: center;
+
+    justify-content: center;
+
+    border-radius: 50%;
+
+    background: #8c999d;
+
+    font-weight: 700;
+}
+
+
+.account-details {
+    min-width: 0;
+
+    flex: 1;
+}
+
+
+.account-name {
+    white-space: nowrap;
+
     overflow: hidden;
+
     text-overflow: ellipsis;
+
+    font-size: 14px;
 }
+
 
 .account-plan {
+    color: #999;
+
     font-size: 12px;
-    color: #777;
-    margin-top: 3px;
+
+    margin-top: 2px;
 }
 
 
@@ -1374,46 +1683,86 @@ textarea {
 ========================================================= */
 
 .main {
-    flex: 1;
     min-width: 0;
+
+    flex: 1;
+
+    height: 100vh;
+
     display: flex;
+
     flex-direction: column;
+
+    background: #000;
 }
+
+
+/* =========================================================
+   HEADER
+========================================================= */
 
 .header {
-    height: 60px;
+    height: 62px;
+
     flex-shrink: 0;
-    border-bottom: 1px solid #eee;
+
     display: flex;
+
     align-items: center;
-    padding: 0 16px;
-    gap: 12px;
+
+    gap: 10px;
+
+    padding:
+        0 14px;
+
+    border-bottom:
+        1px solid #1f1f1f;
 }
 
-.menu-button {
+
+.mobile-menu {
     display: none;
-    border: none;
+
+    border: 0;
+
     background: transparent;
-    font-size: 23px;
-    cursor: pointer;
+
+    color: #fff;
+
+    font-size: 24px;
 }
+
 
 .header-logo {
-    font-size: 20px;
+    font-size: 19px;
+
     font-weight: 700;
 }
+
 
 .header-space {
     flex: 1;
 }
 
-.upgrade-button {
-    border: none;
+
+.upgrade {
+    border: 0;
+
     border-radius: 10px;
-    padding: 9px 14px;
-    background: #111827;
-    color: white;
-    cursor: pointer;
+
+    padding:
+        9px 14px;
+
+    background: #fff;
+
+    color: #000;
+
+    font-weight: 600;
+}
+
+
+.upgrade:hover {
+    background: #ddd;
 }
 
 
@@ -1423,68 +1772,132 @@ textarea {
 
 .chatbox {
     flex: 1;
+
     overflow-y: auto;
-    padding: 25px;
+
+    padding:
+        28px 20px 120px;
 }
 
+
 .welcome {
-    max-width: 800px;
-    margin: 100px auto 0;
+    max-width: 850px;
+
+    margin:
+        110px auto 0;
+
     text-align: center;
 }
 
+
 .welcome h1 {
     font-size: 34px;
+
+    margin-bottom: 10px;
 }
 
+
 .welcome p {
-    color: #777;
+    color: #888;
 }
+
+
+/* =========================================================
+   MESSAGES
+========================================================= */
 
 .message {
     max-width: 850px;
-    margin: 0 auto 22px;
+
+    margin:
+        0 auto 22px;
+
     line-height: 1.65;
+
+    word-wrap: break-word;
 }
+
 
 .user-message {
-    padding: 13px 17px;
-    border-radius: 16px;
-    background: #f3f4f6;
+    display: flex;
+
+    justify-content: flex-end;
 }
 
-.assistant-message {
-    padding: 5px 0;
+
+.user-bubble {
+    max-width: 78%;
+
+    padding:
+        11px 15px;
+
+    border-radius:
+        17px;
+
+    background: #2a2a2a;
 }
+
+
+.assistant-message {
+    color: #eee;
+}
+
 
 .assistant-message pre {
     position: relative;
-    padding: 45px 15px 15px;
-    border-radius: 12px;
+
     overflow-x: auto;
-    background: #f6f8fa;
+
+    padding:
+        45px 14px 14px;
+
+    border-radius: 12px;
 }
+
+
+.assistant-message img {
+    max-width: 100%;
+}
+
 
 .code-actions {
     position: absolute;
+
     top: 8px;
+
     right: 8px;
+
     display: flex;
-    gap: 6px;
+
+    gap: 5px;
 }
 
+
 .code-actions button {
-    border: 1px solid #ddd;
+    border: 1px solid #555;
+
     border-radius: 7px;
-    padding: 5px 8px;
-    background: white;
-    cursor: pointer;
+
+    background: #222;
+
+    color: #fff;
+
+    padding:
+        5px 8px;
+
+    font-size: 12px;
 }
+
 
 .thinking {
     max-width: 850px;
-    margin: 0 auto 20px;
-    color: #777;
+
+    margin:
+        0 auto 20px;
+
+    color: #888;
+
+    font-size: 14px;
 }
 
 
@@ -1493,53 +1906,102 @@ textarea {
 ========================================================= */
 
 .footer {
-    padding: 12px 18px 18px;
     position: relative;
+
+    flex-shrink: 0;
+
+    padding:
+        10px 18px 18px;
+
+    background: #000;
 }
 
-.input-container {
+
+.input-box {
     max-width: 850px;
+
     margin: auto;
+
     display: flex;
+
     align-items: flex-end;
-    padding: 8px;
-    border: 1px solid #d9d9d9;
+
+    gap: 4px;
+
+    padding: 7px;
+
+    border:
+        1px solid #404040;
+
     border-radius: 18px;
-    box-shadow: 0 3px 15px rgba(0,0,0,.05);
+
+    background: #161616;
 }
+
 
 .message-input {
     flex: 1;
-    resize: none;
-    border: none;
-    outline: none;
-    padding: 10px;
+
     min-height: 42px;
-    max-height: 150px;
+
+    max-height: 140px;
+
+    resize: none;
+
+    outline: none;
+
+    border: 0;
+
+    background: transparent;
+
+    color: #fff;
+
+    padding:
+        10px 8px;
 }
+
+
+.message-input::placeholder {
+    color: #777;
+}
+
 
 .icon-button {
     width: 40px;
     height: 40px;
-    border: none;
-    background: transparent;
+
+    flex-shrink: 0;
+
+    border: 0;
+
     border-radius: 10px;
-    cursor: pointer;
-    font-size: 18px;
+
+    background: transparent;
+
+    color: #fff;
+
+    font-size: 19px;
 }
+
 
 .icon-button:hover {
-    background: #eee;
+    background: #292929;
 }
+
 
 .send-button {
-    color: white;
-    background: #111827;
+    background: #fff;
+
+    color: #000;
+
+    border-radius: 50%;
 }
 
-.listening {
-    background: #ef4444 !important;
-    color: white;
+
+.mic-listening {
+    background: #d22;
+
+    color: #fff;
 }
 
 
@@ -1549,29 +2011,49 @@ textarea {
 
 .plus-menu {
     position: absolute;
+
     left: 18px;
-    bottom: 82px;
-    width: 230px;
+
+    bottom: 78px;
+
+    width: 245px;
+
     padding: 8px;
-    background: white;
-    border: 1px solid #ddd;
+
+    background: #171717;
+
+    border:
+        1px solid #383838;
+
     border-radius: 14px;
-    box-shadow: 0 12px 35px rgba(0,0,0,.15);
+
+    box-shadow:
+        0 15px 45px rgba(0,0,0,.5);
+
     z-index: 50;
 }
 
-.plus-menu button {
+
+.plus-item {
     width: 100%;
-    border: none;
-    background: white;
-    padding: 11px;
+
+    border: 0;
+
+    background: transparent;
+
+    color: #fff;
+
     text-align: left;
+
+    padding:
+        11px 12px;
+
     border-radius: 9px;
-    cursor: pointer;
 }
 
-.plus-menu button:hover {
-    background: #f1f1f1;
+
+.plus-item:hover {
+    background: #292929;
 }
 
 
@@ -1581,48 +2063,209 @@ textarea {
 
 .modal {
     position: fixed;
+
     inset: 0;
-    z-index: 100;
+
+    z-index: 2000;
+
     display: flex;
-    justify-content: center;
+
     align-items: center;
+
+    justify-content: center;
+
     padding: 20px;
-    background: rgba(0,0,0,.45);
+
+    background:
+        rgba(0,0,0,.65);
 }
+
 
 .modal-card {
     width: 100%;
-    max-width: 500px;
+
+    max-width: 520px;
+
     max-height: 90vh;
+
     overflow-y: auto;
+
     padding: 25px;
+
+    border:
+        1px solid #333;
+
     border-radius: 18px;
-    background: white;
+
+    background: #171717;
+
+    color: #fff;
 }
 
-.modal-close {
+
+.close-modal {
     float: right;
-    border: none;
+
+    border: 0;
+
     background: transparent;
-    font-size: 24px;
-    cursor: pointer;
+
+    color: #aaa;
+
+    font-size: 25px;
 }
 
-.plan-card {
-    border: 1px solid #ddd;
-    border-radius: 14px;
+
+.modal-card h2 {
+    margin-top: 0;
+}
+
+
+/* =========================================================
+   AUTH
+========================================================= */
+
+.auth-screen {
+    position: fixed;
+
+    inset: 0;
+
+    z-index: 5000;
+
+    display: flex;
+
+    align-items: center;
+
+    justify-content: center;
+
+    padding: 20px;
+
+    background: #000;
+}
+
+
+.auth-card {
+    width: 100%;
+
+    max-width: 420px;
+
+    padding: 30px;
+
+    border:
+        1px solid #333;
+
+    border-radius: 20px;
+
+    background: #151515;
+}
+
+
+.auth-logo {
+    text-align: center;
+
+    font-size: 29px;
+
+    font-weight: 700;
+
+    margin-bottom: 8px;
+}
+
+
+.auth-description {
+    text-align: center;
+
+    color: #999;
+
+    margin-bottom: 24px;
+}
+
+
+.auth-input {
+    width: 100%;
+
+    padding: 13px;
+
+    margin-bottom: 12px;
+
+    border:
+        1px solid #444;
+
+    border-radius: 11px;
+
+    background: #0c0c0c;
+
+    color: #fff;
+
+    outline: none;
+}
+
+
+.auth-button {
+    width: 100%;
+
+    padding: 13px;
+
+    border: 0;
+
+    border-radius: 11px;
+
+    background: #fff;
+
+    color: #000;
+
+    font-weight: 700;
+}
+
+
+.auth-switch {
+    text-align: center;
+
+    color: #888;
+
+    margin-top: 18px;
+}
+
+
+.auth-switch button {
+    border: 0;
+
+    background: transparent;
+
+    color: #fff;
+
+    font-weight: 700;
+}
+
+
+/* =========================================================
+   PLANS
+========================================================= */
+
+.plan {
+    border:
+        1px solid #3a3a3a;
+
+    border-radius: 13px;
+
     padding: 16px;
-    margin-top: 10px;
+
+    margin-top: 12px;
 }
 
-.plan-card button {
-    float: right;
-    border: none;
+
+.plan button {
+    border: 0;
+
     border-radius: 8px;
-    padding: 8px 12px;
-    background: #111827;
-    color: white;
-    cursor: pointer;
+
+    padding:
+        8px 12px;
+
+    background: #fff;
+
+    color: #000;
+
+    font-weight: 600;
 }
 
 
@@ -1634,54 +2277,108 @@ textarea {
 
     .sidebar {
         position: fixed;
+
+        left: 0;
         top: 0;
         bottom: 0;
-        left: -280px;
-        z-index: 90;
-        transition: left .25s;
+
+        z-index: 3000;
+
+        transform:
+            translateX(-100%);
+
+        width: 300px;
+
+        box-shadow:
+            10px 0 40px rgba(0,0,0,.6);
     }
+
 
     .sidebar.open {
-        left: 0;
+        transform:
+            translateX(0);
     }
 
-    .menu-button {
+
+    .mobile-menu {
         display: block;
     }
 
-    .chatbox {
-        padding: 15px;
+
+    .sidebar-overlay {
+        display: none;
+
+        position: fixed;
+
+        inset: 0;
+
+        z-index: 2999;
+
+        background:
+            rgba(0,0,0,.6);
     }
 
-    .welcome {
-        margin-top: 70px;
+
+    .sidebar-overlay.open {
+        display: block;
     }
+
+
+    .chatbox {
+        padding:
+            18px 13px 110px;
+    }
+
+
+    .footer {
+        padding:
+            8px 8px
+            calc(
+                8px +
+                env(safe-area-inset-bottom)
+            );
+    }
+
+
+    .welcome {
+        margin-top: 80px;
+    }
+
 
     .welcome h1 {
         font-size: 27px;
     }
 
+
+    .user-bubble {
+        max-width: 88%;
+    }
+
+
     .header {
-        padding: 0 10px;
+        height: 58px;
     }
 
-    .upgrade-button {
-        padding: 8px 10px;
-    }
 
-    .footer {
-        padding: 8px;
-        padding-bottom: calc(
-            8px + env(safe-area-inset-bottom)
-        );
-    }
+    .upgrade {
+        padding:
+            8px 10px;
 
-    .message {
-        max-width: 100%;
+        font-size: 13px;
     }
+}
 
-    .auth-card {
-        padding: 25px;
+
+/* =========================================================
+   DESKTOP SCREEN BLOCK
+========================================================= */
+
+@media (min-width: 701px) {
+
+    .sidebar.closed {
+        width: 0;
+
+        border: 0;
     }
 }
 
@@ -1689,17 +2386,18 @@ textarea {
 
 </head>
 
+
 <body>
 
 
-<!-- =========================================================
+<!-- ========================================================
      AUTH SCREEN
-     Hidden when user first opens Nirale AI.
-========================================================= -->
+     Hidden when Nirale AI first opens.
+======================================================== -->
 
 <div
     id="authScreen"
-    class="hidden"
+    class="auth-screen hidden"
 >
 
     <div class="auth-card">
@@ -1719,18 +2417,20 @@ textarea {
 
             <input
                 id="loginEmail"
+                class="auth-input"
                 type="email"
                 placeholder="Email"
             >
 
             <input
                 id="loginPassword"
+                class="auth-input"
                 type="password"
                 placeholder="Password"
             >
 
             <button
-                class="primary-button"
+                class="auth-button"
                 onclick="login()"
             >
                 Login
@@ -1740,7 +2440,9 @@ textarea {
 
                 Don't have an account?
 
-                <button onclick="showSignup()">
+                <button
+                    onclick="showSignup()"
+                >
                     Create account
                 </button>
 
@@ -1758,18 +2460,20 @@ textarea {
 
             <input
                 id="signupEmail"
+                class="auth-input"
                 type="email"
                 placeholder="Email"
             >
 
             <input
                 id="signupPassword"
+                class="auth-input"
                 type="password"
                 placeholder="Password"
             >
 
             <button
-                class="primary-button"
+                class="auth-button"
                 onclick="signup()"
             >
                 Create account
@@ -1779,7 +2483,9 @@ textarea {
 
                 Already have an account?
 
-                <button onclick="showLogin()">
+                <button
+                    onclick="showLogin()"
+                >
                     Login
                 </button>
 
@@ -1792,9 +2498,9 @@ textarea {
 </div>
 
 
-<!-- =========================================================
+<!-- ========================================================
      APP
-========================================================= -->
+======================================================== -->
 
 <div id="app">
 
@@ -1806,43 +2512,199 @@ textarea {
         class="sidebar"
     >
 
-        <div class="sidebar-top">
+        <div class="sidebar-header">
+
+            <div class="sidebar-logo">
+                ✨ Nirale AI
+            </div>
 
             <button
-                class="new-chat"
-                onclick="newChat()"
+                class="sidebar-top-button"
+                onclick="searchChats()"
+                title="Search"
             >
-                ＋ New Chat
+                🔍
             </button>
 
-            <div
-                class="side-button"
-                onclick="openUpgrade()"
+            <button
+                class="sidebar-top-button"
+                onclick="closeSidebar()"
+                title="Close"
             >
-                ⭐ Upgrade
-            </div>
+                ×
+            </button>
+
+        </div>
+
+
+        <!-- MAIN OPTIONS -->
+
+        <div class="sidebar-menu">
+
+
+            <button
+                class="menu-item active"
+                onclick="newChat(); closeSidebar();"
+            >
+                <span class="menu-icon">
+                    ✏️
+                </span>
+
+                <span class="menu-text">
+                    New chat
+                </span>
+            </button>
+
+
+            <button
+                class="menu-item"
+                onclick="openLibrary()"
+            >
+                <span class="menu-icon">
+                    📚
+                </span>
+
+                <span class="menu-text">
+                    Library
+                </span>
+            </button>
+
+
+            <button
+                class="menu-item"
+                onclick="openProjects()"
+            >
+                <span class="menu-icon">
+                    📁
+                </span>
+
+                <span class="menu-text">
+                    Projects
+                </span>
+
+                <span class="menu-plus">
+                    ＋
+                </span>
+            </button>
+
+
+            <button
+                class="menu-item"
+                onclick="openScheduled()"
+            >
+                <span class="menu-icon">
+                    🕐
+                </span>
+
+                <span class="menu-text">
+                    Scheduled
+                </span>
+            </button>
+
+
+            <button
+                class="menu-item"
+                onclick="openPlugins()"
+            >
+                <span class="menu-icon">
+                    🔌
+                </span>
+
+                <span class="menu-text">
+                    Plugins
+                </span>
+            </button>
+
+
+            <button
+                class="menu-item"
+                onclick="openCodex()"
+            >
+                <span class="menu-icon">
+                    💻
+                </span>
+
+                <span class="menu-text">
+                    Codex
+                </span>
+
+                <span>
+                    ↗
+                </span>
+            </button>
+
+
+            <button
+                class="menu-item"
+                onclick="toggleMore()"
+            >
+                <span class="menu-icon">
+                    •••
+                </span>
+
+                <span class="menu-text">
+                    More
+                </span>
+            </button>
+
 
             <div
-                class="side-button"
-                onclick="openAccount()"
+                id="moreContent"
+                class="more-content"
             >
-                👤 Account
-            </div>
 
-            <div
-                id="adminItem"
-                class="side-button hidden"
-                onclick="openAdmin()"
-            >
-                👑 Admin Dashboard
+                <button
+                    class="menu-item"
+                    onclick="openSettings()"
+                >
+                    ⚙️
+                    <span class="menu-text">
+                        Settings
+                    </span>
+                </button>
+
+                <button
+                    class="menu-item"
+                    onclick="openHelp()"
+                >
+                    ❓
+                    <span class="menu-text">
+                        Help
+                    </span>
+                </button>
+
             </div>
 
         </div>
 
 
-        <div class="recents-title">
-            Recents
+        <!-- RECENTS HEADER -->
+
+        <div class="recents-header">
+
+            <span class="recents-title">
+                Recents
+            </span>
+
+            <button
+                class="small-action"
+                onclick="newChat()"
+                title="New chat"
+            >
+                ✏️
+            </button>
+
+            <button
+                class="small-action"
+                onclick="recentOptions()"
+            >
+                •••
+            </button>
+
         </div>
+
+
+        <!-- RECENTS -->
 
         <div
             id="recents"
@@ -1851,33 +2713,58 @@ textarea {
         </div>
 
 
-        <div class="account-area">
+        <!-- ACCOUNT -->
 
-            <div
-                id="sideEmail"
-                class="account-email"
-            >
-                Guest
-            </div>
+        <div class="sidebar-account">
 
-            <div
-                id="sidePlan"
-                class="account-plan"
+            <button
+                class="account-button"
+                onclick="openAccount()"
             >
-                4 free questions
-            </div>
 
-            <div
-                id="logoutButton"
-                class="side-button hidden"
-                onclick="logout()"
-            >
-                ↪ Logout
-            </div>
+                <div
+                    id="avatar"
+                    class="avatar"
+                >
+                    G
+                </div>
+
+                <div class="account-details">
+
+                    <div
+                        id="sideEmail"
+                        class="account-name"
+                    >
+                        Guest
+                    </div>
+
+                    <div
+                        id="sidePlan"
+                        class="account-plan"
+                    >
+                        4 free questions
+                    </div>
+
+                </div>
+
+                <span>
+                    •••
+                </span>
+
+            </button>
 
         </div>
 
     </aside>
+
+
+    <!-- MOBILE OVERLAY -->
+
+    <div
+        id="sidebarOverlay"
+        class="sidebar-overlay"
+        onclick="closeSidebar()"
+    ></div>
 
 
     <!-- MAIN -->
@@ -1885,11 +2772,13 @@ textarea {
     <main class="main">
 
 
+        <!-- HEADER -->
+
         <header class="header">
 
             <button
-                class="menu-button"
-                onclick="toggleSidebar()"
+                class="mobile-menu"
+                onclick="openSidebar()"
             >
                 ☰
             </button>
@@ -1900,8 +2789,10 @@ textarea {
 
             <div class="header-space"></div>
 
+            <!-- ONLY UPGRADE BUTTON -->
+
             <button
-                class="upgrade-button"
+                class="upgrade"
                 onclick="openUpgrade()"
             >
                 ⭐ Upgrade
@@ -1910,7 +2801,7 @@ textarea {
         </header>
 
 
-        <!-- CHATBOX -->
+        <!-- CHAT -->
 
         <div
             id="chatbox"
@@ -1947,27 +2838,45 @@ textarea {
                 class="plus-menu hidden"
             >
 
-                <button onclick="attachFile()">
+                <button
+                    class="plus-item"
+                    onclick="attachFile()"
+                >
                     📎 Attach files
                 </button>
 
-                <button onclick="openCamera()">
+                <button
+                    class="plus-item"
+                    onclick="openCamera()"
+                >
                     📷 Camera
                 </button>
 
-                <button onclick="openGallery()">
+                <button
+                    class="plus-item"
+                    onclick="openGallery()"
+                >
                     🖼️ Photos / Gallery
                 </button>
 
-                <button onclick="webSearch()">
+                <button
+                    class="plus-item"
+                    onclick="webSearch()"
+                >
                     🔎 Web search
                 </button>
 
-                <button onclick="createImage()">
+                <button
+                    class="plus-item"
+                    onclick="createImage()"
+                >
                     🎨 Create image
                 </button>
 
-                <button onclick="openMap()">
+                <button
+                    class="plus-item"
+                    onclick="openMap()"
+                >
                     🗺️ Map
                 </button>
 
@@ -1976,11 +2885,11 @@ textarea {
 
             <!-- INPUT -->
 
-            <div class="input-container">
+            <div class="input-box">
 
                 <button
                     class="icon-button"
-                    onclick="togglePlusMenu()"
+                    onclick="togglePlus()"
                 >
                     ＋
                 </button>
@@ -1997,6 +2906,7 @@ textarea {
                     id="micBtn"
                     class="icon-button"
                     onclick="startVoice()"
+                    title="Voice"
                 >
                     🎤
                 </button>
@@ -2005,7 +2915,7 @@ textarea {
                     class="icon-button send-button"
                     onclick="sendMessage()"
                 >
-                    ➤
+                    ↑
                 </button>
 
             </div>
@@ -2017,7 +2927,7 @@ textarea {
 </div>
 
 
-<!-- FILE INPUTS -->
+<!-- FILE INPUT -->
 
 <input
     id="fileInput"
@@ -2025,6 +2935,7 @@ textarea {
     hidden
     onchange="fileSelected(event)"
 >
+
 
 <input
     id="cameraInput"
@@ -2035,6 +2946,7 @@ textarea {
     onchange="imageSelected(event)"
 >
 
+
 <input
     id="galleryInput"
     type="file"
@@ -2044,7 +2956,9 @@ textarea {
 >
 
 
-<!-- ACCOUNT MODAL -->
+<!-- ========================================================
+     ACCOUNT MODAL
+======================================================== -->
 
 <div
     id="accountModal"
@@ -2054,24 +2968,40 @@ textarea {
     <div class="modal-card">
 
         <button
-            class="modal-close"
+            class="close-modal"
             onclick="closeModals()"
         >
             ×
         </button>
 
-        <h2>👤 Account</h2>
+        <h2>
+            👤 Account
+        </h2>
 
-        <p id="accountEmail"></p>
+        <p id="accountEmail">
+            Email: Guest
+        </p>
 
-        <p id="accountPlan"></p>
+        <p id="accountPlan">
+            Plan: Free
+        </p>
+
+        <button
+            id="logoutBtn"
+            class="auth-button hidden"
+            onclick="logout()"
+        >
+            Logout
+        </button>
 
     </div>
 
 </div>
 
 
-<!-- UPGRADE MODAL -->
+<!-- ========================================================
+     UPGRADE
+======================================================== -->
 
 <div
     id="upgradeModal"
@@ -2081,35 +3011,45 @@ textarea {
     <div class="modal-card">
 
         <button
-            class="modal-close"
+            class="close-modal"
             onclick="closeModals()"
         >
             ×
         </button>
 
-        <h2>⭐ Upgrade Nirale AI</h2>
+        <h2>
+            ⭐ Upgrade Nirale AI
+        </h2>
 
 
-        <div class="plan-card">
+        <div class="plan">
 
-            <b>Free</b>
+            <h3>
+                Free
+            </h3>
 
-            <p>₹0</p>
+            <p>
+                ₹0
+            </p>
 
             <button
                 onclick="selectPlan('Free')"
             >
-                Select
+                Current
             </button>
 
         </div>
 
 
-        <div class="plan-card">
+        <div class="plan">
 
-            <b>Plus</b>
+            <h3>
+                Plus
+            </h3>
 
-            <p>₹499 / month</p>
+            <p>
+                ₹499 / month
+            </p>
 
             <button
                 onclick="selectPlan('Plus')"
@@ -2120,11 +3060,15 @@ textarea {
         </div>
 
 
-        <div class="plan-card">
+        <div class="plan">
 
-            <b>Pro</b>
+            <h3>
+                Pro
+            </h3>
 
-            <p>₹999 / month</p>
+            <p>
+                ₹999 / month
+            </p>
 
             <button
                 onclick="selectPlan('Pro')"
@@ -2139,7 +3083,9 @@ textarea {
 </div>
 
 
-<!-- ADMIN MODAL -->
+<!-- ========================================================
+     ADMIN
+======================================================== -->
 
 <div
     id="adminModal"
@@ -2149,37 +3095,29 @@ textarea {
     <div class="modal-card">
 
         <button
-            class="modal-close"
+            class="close-modal"
             onclick="closeModals()"
         >
             ×
         </button>
 
-        <h2>👑 Admin Dashboard</h2>
+        <h2>
+            👑 Admin Dashboard
+        </h2>
 
         <div id="adminStats"></div>
 
-        <h3>Users</h3>
+        <h3>
+            Users
+        </h3>
 
-        <div
-            id="adminUsers"
-            style="
-                max-height:250px;
-                overflow:auto;
-            "
-        >
-        </div>
+        <div id="adminUsers"></div>
 
-        <h3>Recent Activity</h3>
+        <h3>
+            Activity
+        </h3>
 
-        <div
-            id="adminActivity"
-            style="
-                max-height:250px;
-                overflow:auto;
-            "
-        >
-        </div>
+        <div id="adminActivity"></div>
 
     </div>
 
@@ -2193,8 +3131,51 @@ textarea {
 ============================================================ */
 
 let currentChatId = null;
+
 let selectedImage = null;
+
 let recognition = null;
+
+
+/* ============================================================
+   SIDEBAR
+============================================================ */
+
+function openSidebar() {
+
+    document
+        .getElementById("sidebar")
+        .classList
+        .add("open");
+
+    document
+        .getElementById("sidebarOverlay")
+        .classList
+        .add("open");
+}
+
+
+function closeSidebar() {
+
+    document
+        .getElementById("sidebar")
+        .classList
+        .remove("open");
+
+    document
+        .getElementById("sidebarOverlay")
+        .classList
+        .remove("open");
+}
+
+
+function toggleMore() {
+
+    document
+        .getElementById("moreContent")
+        .classList
+        .toggle("open");
+}
 
 
 /* ============================================================
@@ -2204,14 +3185,14 @@ let recognition = null;
 function showLogin() {
 
     document
-        .getElementById("signupForm")
-        .classList
-        .add("hidden");
-
-    document
         .getElementById("loginForm")
         .classList
         .remove("hidden");
+
+    document
+        .getElementById("signupForm")
+        .classList
+        .add("hidden");
 }
 
 
@@ -2255,15 +3236,18 @@ async function login() {
         return;
     }
 
+
     const res =
         await fetch(
             "/api/login",
             {
                 method: "POST",
+
                 headers: {
                     "Content-Type":
                         "application/json"
                 },
+
                 body: JSON.stringify({
                     email,
                     password
@@ -2271,8 +3255,10 @@ async function login() {
             }
         );
 
+
     const data =
         await res.json();
+
 
     if (!res.ok) {
 
@@ -2284,8 +3270,8 @@ async function login() {
         return;
     }
 
-    await loadApp();
 
+    await loadApp();
 }
 
 
@@ -2306,6 +3292,7 @@ async function signup() {
             .getElementById("signupPassword")
             .value;
 
+
     if (!email || !password) {
 
         alert(
@@ -2315,15 +3302,18 @@ async function signup() {
         return;
     }
 
+
     const res =
         await fetch(
             "/api/signup",
             {
                 method: "POST",
+
                 headers: {
                     "Content-Type":
                         "application/json"
                 },
+
                 body: JSON.stringify({
                     email,
                     password
@@ -2331,8 +3321,10 @@ async function signup() {
             }
         );
 
+
     const data =
         await res.json();
+
 
     if (!res.ok) {
 
@@ -2344,8 +3336,8 @@ async function signup() {
         return;
     }
 
-    await loadApp();
 
+    await loadApp();
 }
 
 
@@ -2356,15 +3348,16 @@ async function signup() {
 async function loadApp() {
 
     const res =
-        await fetch("/api/me");
+        await fetch(
+            "/api/me"
+        );
+
 
     const user =
         await res.json();
 
 
-    /* -----------------------------------------
-       GUEST
-    ----------------------------------------- */
+    /* GUEST */
 
     if (!user.logged_in) {
 
@@ -2378,33 +3371,42 @@ async function loadApp() {
             .classList
             .remove("hidden");
 
+
         document
             .getElementById("sideEmail")
             .textContent =
             "Guest";
+
 
         document
             .getElementById("sidePlan")
             .textContent =
             "4 free questions";
 
+
         document
-            .getElementById("logoutButton")
+            .getElementById("avatar")
+            .textContent =
+            "G";
+
+
+        document
+            .getElementById("logoutBtn")
             .classList
             .add("hidden");
+
 
         return;
     }
 
 
-    /* -----------------------------------------
-       LOGGED IN
-    ----------------------------------------- */
+    /* LOGGED IN */
 
     document
         .getElementById("authScreen")
         .classList
         .add("hidden");
+
 
     document
         .getElementById("app")
@@ -2417,47 +3419,74 @@ async function loadApp() {
         .textContent =
         user.email;
 
+
     document
         .getElementById("sidePlan")
         .textContent =
-        user.plan + " plan";
-
-
-    document
-        .getElementById("logoutButton")
-        .classList
-        .remove("hidden");
+        user.plan;
 
 
     document
         .getElementById("accountEmail")
         .textContent =
-        "Email: " + user.email;
+        "Email: " +
+        user.email;
 
 
     document
         .getElementById("accountPlan")
         .textContent =
-        "Plan: " + user.plan;
+        "Plan: " +
+        user.plan;
+
+
+    document
+        .getElementById("avatar")
+        .textContent =
+        user.email
+            .charAt(0)
+            .toUpperCase();
+
+
+    document
+        .getElementById("logoutBtn")
+        .classList
+        .remove("hidden");
 
 
     loadRecents();
 
 
-    const adminCheck =
+    const admin =
         await fetch(
             "/api/admin/stats"
         );
 
-    if (adminCheck.ok) {
+
+    if (admin.ok) {
+
+        const menu =
+            document.createElement(
+                "button"
+            );
+
+        menu.className =
+            "menu-item";
+
+        menu.innerHTML = `
+            👑
+            <span class="menu-text">
+                Admin Dashboard
+            </span>
+        `;
+
+        menu.onclick =
+            openAdmin;
 
         document
-            .getElementById("adminItem")
-            .classList
-            .remove("hidden");
-
+            .querySelector(".sidebar-menu")
+            .appendChild(menu);
     }
-
 }
 
 
@@ -2479,26 +3508,15 @@ async function logout() {
 
 
 /* ============================================================
-   SIDEBAR
-============================================================ */
-
-function toggleSidebar() {
-
-    document
-        .getElementById("sidebar")
-        .classList
-        .toggle("open");
-}
-
-
-/* ============================================================
    NEW CHAT
 ============================================================ */
 
 function newChat() {
 
     currentChatId = null;
+
     selectedImage = null;
+
 
     document
         .getElementById("chatbox")
@@ -2507,10 +3525,18 @@ function newChat() {
                 id="welcome"
                 class="welcome"
             >
-                <h1>How can I help you?</h1>
-                <p>Ask Nirale AI anything.</p>
+
+                <h1>
+                    How can I help you?
+                </h1>
+
+                <p>
+                    Ask Nirale AI anything.
+                </p>
+
             </div>
         `;
+
 
     document
         .getElementById("messageInput")
@@ -2519,10 +3545,10 @@ function newChat() {
 
 
 /* ============================================================
-   PLUS MENU
+   PLUS
 ============================================================ */
 
-function togglePlusMenu() {
+function togglePlus() {
 
     document
         .getElementById("plusMenu")
@@ -2531,33 +3557,46 @@ function togglePlusMenu() {
 }
 
 
+function closePlus() {
+
+    document
+        .getElementById("plusMenu")
+        .classList
+        .add("hidden");
+}
+
+
+/* ============================================================
+   FILE
+============================================================ */
+
 function attachFile() {
+
+    closePlus();
 
     document
         .getElementById("fileInput")
         .click();
-
-    togglePlusMenu();
 }
 
 
 function openCamera() {
 
+    closePlus();
+
     document
         .getElementById("cameraInput")
         .click();
-
-    togglePlusMenu();
 }
 
 
 function openGallery() {
 
+    closePlus();
+
     document
         .getElementById("galleryInput")
         .click();
-
-    togglePlusMenu();
 }
 
 
@@ -2568,8 +3607,8 @@ function fileSelected(event) {
 
     if (!file) return;
 
-    addUserMessage(
-        "📎 Attached file: " +
+    addUserText(
+        "📎 " +
         file.name
     );
 }
@@ -2582,8 +3621,10 @@ function imageSelected(event) {
 
     if (!file) return;
 
+
     const reader =
         new FileReader();
+
 
     reader.onload =
         function(e) {
@@ -2591,40 +3632,56 @@ function imageSelected(event) {
             selectedImage =
                 e.target.result;
 
+
             const chat =
                 document
                     .getElementById("chatbox");
 
-            const div =
+
+            const wrapper =
                 document
                     .createElement("div");
 
-            div.className =
+
+            wrapper.className =
                 "message user-message";
+
 
             const img =
                 document
                     .createElement("img");
 
+
             img.src =
                 selectedImage;
 
+
             img.style.maxWidth =
-                "280px";
+                "300px";
+
 
             img.style.maxHeight =
-                "280px";
+                "300px";
+
 
             img.style.borderRadius =
-                "14px";
+                "15px";
 
-            div.appendChild(img);
 
-            chat.appendChild(div);
+            wrapper.appendChild(
+                img
+            );
+
+
+            chat.appendChild(
+                wrapper
+            );
+
 
             chat.scrollTop =
                 chat.scrollHeight;
         };
+
 
     reader.readAsDataURL(file);
 }
@@ -2636,13 +3693,14 @@ function imageSelected(event) {
 
 function webSearch() {
 
-    togglePlusMenu();
+    closePlus();
 
     const q =
         document
             .getElementById("messageInput")
             .value
             .trim();
+
 
     window.open(
         "https://www.google.com/search?q=" +
@@ -2660,13 +3718,14 @@ function webSearch() {
 
 function openMap() {
 
-    togglePlusMenu();
+    closePlus();
 
     const q =
         document
             .getElementById("messageInput")
             .value
             .trim();
+
 
     window.open(
         "https://www.google.com/maps/search/" +
@@ -2679,50 +3738,75 @@ function openMap() {
 
 
 /* ============================================================
-   CREATE IMAGE
+   IMAGE
 ============================================================ */
 
 function createImage() {
 
-    togglePlusMenu();
+    closePlus();
 
-    addAssistantMessage(
-        "🎨 Create Image selected. " +
-        "Actual image generation API connect " +
+    addAssistant(
+        "🎨 Create image option selected. " +
+        "Actual image-generation service connect " +
         "madida mele image generate madabahudu."
     );
 }
 
 
 /* ============================================================
-   ADD USER MESSAGE
+   USER MESSAGE
 ============================================================ */
 
-function addUserMessage(text) {
+function addUserText(text) {
 
     const welcome =
-        document
-            .getElementById("welcome");
+        document.getElementById(
+            "welcome"
+        );
 
-    if (welcome) {
+    if (welcome)
         welcome.remove();
-    }
+
 
     const chat =
-        document
-            .getElementById("chatbox");
+        document.getElementById(
+            "chatbox"
+        );
 
-    const div =
-        document
-            .createElement("div");
 
-    div.className =
+    const wrapper =
+        document.createElement(
+            "div"
+        );
+
+
+    wrapper.className =
         "message user-message";
 
-    div.textContent =
+
+    const bubble =
+        document.createElement(
+            "div"
+        );
+
+
+    bubble.className =
+        "user-bubble";
+
+
+    bubble.textContent =
         text;
 
-    chat.appendChild(div);
+
+    wrapper.appendChild(
+        bubble
+    );
+
+
+    chat.appendChild(
+        wrapper
+    );
+
 
     chat.scrollTop =
         chat.scrollHeight;
@@ -2730,36 +3814,45 @@ function addUserMessage(text) {
 
 
 /* ============================================================
-   ADD ASSISTANT MESSAGE
+   ASSISTANT MESSAGE
 ============================================================ */
 
-function addAssistantMessage(text) {
+function addAssistant(text) {
 
     const welcome =
-        document
-            .getElementById("welcome");
+        document.getElementById(
+            "welcome"
+        );
 
-    if (welcome) {
+    if (welcome)
         welcome.remove();
-    }
+
 
     const chat =
-        document
-            .getElementById("chatbox");
+        document.getElementById(
+            "chatbox"
+        );
+
 
     const div =
-        document
-            .createElement("div");
+        document.createElement(
+            "div"
+        );
+
 
     div.className =
         "message assistant-message";
 
+
     div.innerHTML =
         marked.parse(text);
 
+
     chat.appendChild(div);
 
+
     formatCode(div);
+
 
     chat.scrollTop =
         chat.scrollHeight;
@@ -2767,7 +3860,7 @@ function addAssistantMessage(text) {
 
 
 /* ============================================================
-   CODE FORMAT
+   CODE
 ============================================================ */
 
 function formatCode(container) {
@@ -2777,65 +3870,76 @@ function formatCode(container) {
         .forEach(pre => {
 
             const code =
-                pre.querySelector("code");
+                pre.querySelector(
+                    "code"
+                );
 
-            if (!code) return;
+
+            if (!code)
+                return;
+
 
             try {
-                hljs.highlightElement(code);
+                hljs.highlightElement(
+                    code
+                );
             } catch(e) {}
 
 
             const actions =
-                document
-                    .createElement("div");
+                document.createElement(
+                    "div"
+                );
+
 
             actions.className =
                 "code-actions";
 
 
             const copy =
-                document
-                    .createElement("button");
+                document.createElement(
+                    "button"
+                );
+
 
             copy.textContent =
                 "Copy";
 
+
             copy.onclick =
-                async function() {
+                async () => {
 
-                    try {
-
-                        await navigator
-                            .clipboard
-                            .writeText(
-                                code.innerText
-                            );
-
-                        copy.textContent =
-                            "Copied";
-
-                        setTimeout(
-                            () => {
-                                copy.textContent =
-                                    "Copy";
-                            },
-                            1200
+                    await navigator
+                        .clipboard
+                        .writeText(
+                            code.innerText
                         );
 
-                    } catch(e) {}
+                    copy.textContent =
+                        "Copied";
+
+                    setTimeout(
+                        () => {
+                            copy.textContent =
+                                "Copy";
+                        },
+                        1000
+                    );
                 };
 
 
             const download =
-                document
-                    .createElement("button");
+                document.createElement(
+                    "button"
+                );
+
 
             download.textContent =
                 "Download";
 
+
             download.onclick =
-                function() {
+                () => {
 
                     const blob =
                         new Blob(
@@ -2846,14 +3950,18 @@ function formatCode(container) {
                             }
                         );
 
+
                     const url =
                         URL.createObjectURL(
                             blob
                         );
 
+
                     const a =
-                        document
-                            .createElement("a");
+                        document.createElement(
+                            "a"
+                        );
+
 
                     a.href =
                         url;
@@ -2863,42 +3971,55 @@ function formatCode(container) {
 
                     a.click();
 
+
                     URL.revokeObjectURL(
                         url
                     );
                 };
 
 
-            actions.appendChild(copy);
-            actions.appendChild(download);
+            actions.appendChild(
+                copy
+            );
 
-            pre.appendChild(actions);
+            actions.appendChild(
+                download
+            );
+
+            pre.appendChild(
+                actions
+            );
 
         });
 }
 
 
 /* ============================================================
-   SEND MESSAGE
+   SEND
 ============================================================ */
 
 async function sendMessage() {
 
     const input =
-        document
-            .getElementById("messageInput");
+        document.getElementById(
+            "messageInput"
+        );
+
 
     const message =
         input.value.trim();
 
 
-    if (!message && !selectedImage) {
+    if (
+        !message &&
+        !selectedImage
+    ) {
         return;
     }
 
 
     if (message) {
-        addUserMessage(message);
+        addUserText(message);
     }
 
 
@@ -2906,21 +4027,31 @@ async function sendMessage() {
 
 
     const chat =
-        document
-            .getElementById("chatbox");
+        document.getElementById(
+            "chatbox"
+        );
 
 
     const thinking =
-        document
-            .createElement("div");
+        document.createElement(
+            "div"
+        );
+
 
     thinking.className =
         "thinking";
 
-    thinking.textContent =
-        "ಯೋಚಿಸುತ್ತಿದೆ...";
 
-    chat.appendChild(thinking);
+    thinking.textContent =
+        thinking_text_client(
+            message
+        );
+
+
+    chat.appendChild(
+        thinking
+    );
+
 
     chat.scrollTop =
         chat.scrollHeight;
@@ -2933,16 +4064,19 @@ async function sendMessage() {
                 "/api/chat",
                 {
                     method: "POST",
+
                     headers: {
                         "Content-Type":
                             "application/json"
                     },
+
                     body: JSON.stringify({
                         message:
-                            message ||
-                            "ಈ image ನೋಡಿ.",
+                            message,
+
                         chat_id:
                             currentChatId,
+
                         image_data:
                             selectedImage
                     })
@@ -2957,13 +4091,9 @@ async function sendMessage() {
         thinking.remove();
 
 
-        /* ------------------------------------
-           4 QUESTIONS COMPLETE
-        ------------------------------------ */
-
         if (
             data.detail ===
-            "FREE_LOGIN_REQUIRED"
+            "LOGIN_REQUIRED"
         ) {
 
             showLoginRequired();
@@ -2974,7 +4104,7 @@ async function sendMessage() {
 
         if (!res.ok) {
 
-            addAssistantMessage(
+            addAssistant(
                 "❌ " +
                 (
                     data.detail ||
@@ -2993,20 +4123,17 @@ async function sendMessage() {
         }
 
 
-        selectedImage = null;
+        selectedImage =
+            null;
 
 
-        addAssistantMessage(
+        addAssistant(
             data.reply
         );
 
 
-        /* ------------------------------------
-           AFTER 4TH ANSWER
-        ------------------------------------ */
-
         if (
-            data.guest === true &&
+            data.guest &&
             data.guest_count >= 4
         ) {
 
@@ -3014,9 +4141,8 @@ async function sendMessage() {
                 () => {
                     showLoginRequired();
                 },
-                1000
+                900
             );
-
         }
 
 
@@ -3026,10 +4152,55 @@ async function sendMessage() {
 
         thinking.remove();
 
-        addAssistantMessage(
+        addAssistant(
             "❌ Server connection problem."
         );
     }
+}
+
+
+/* ============================================================
+   THINKING LANGUAGE
+============================================================ */
+
+function thinking_text_client(text) {
+
+    if (
+        /[\u0C80-\u0CFF]/.test(text)
+    ) {
+        return "ಯೋಚಿಸುತ್ತಿದೆ...";
+    }
+
+
+    if (
+        /[\u0900-\u097F]/.test(text)
+    ) {
+        return "सोच रहा हूँ...";
+    }
+
+
+    if (
+        /[\u0C00-\u0C7F]/.test(text)
+    ) {
+        return "ఆలోచిస్తోంది...";
+    }
+
+
+    if (
+        /[\u0B80-\u0BFF]/.test(text)
+    ) {
+        return "யோசிக்கிறது...";
+    }
+
+
+    if (
+        /[\u0D00-\u0D7F]/.test(text)
+    ) {
+        return "ചിന്തിക്കുന്നു...";
+    }
+
+
+    return "Thinking...";
 }
 
 
@@ -3044,17 +4215,19 @@ function showLoginRequired() {
         .classList
         .remove("hidden");
 
+
     document
         .getElementById("app")
         .classList
         .add("hidden");
+
 
     showLogin();
 }
 
 
 /* ============================================================
-   ENTER KEY
+   ENTER
 ============================================================ */
 
 function handleKey(event) {
@@ -3085,7 +4258,7 @@ function startVoice() {
     if (!SpeechRecognition) {
 
         alert(
-            "ಈ browserನಲ್ಲಿ voice input support ಇಲ್ಲ."
+            "ಈ browser voice input support ಮಾಡಲ್ಲ."
         );
 
         return;
@@ -3101,7 +4274,9 @@ function startVoice() {
         document
             .getElementById("micBtn")
             .classList
-            .remove("listening");
+            .remove(
+                "mic-listening"
+            );
 
         return;
     }
@@ -3114,19 +4289,23 @@ function startVoice() {
     recognition.lang =
         "kn-IN";
 
+
     recognition.continuous =
         false;
+
 
     recognition.interimResults =
         true;
 
 
     const mic =
-        document
-            .getElementById("micBtn");
+        document.getElementById(
+            "micBtn"
+        );
+
 
     mic.classList.add(
-        "listening"
+        "mic-listening"
     );
 
 
@@ -3135,9 +4314,14 @@ function startVoice() {
 
             let text = "";
 
+
             for (
-                let i = event.resultIndex;
-                i < event.results.length;
+                let i =
+                    event.resultIndex;
+
+                i <
+                    event.results.length;
+
                 i++
             ) {
 
@@ -3146,9 +4330,13 @@ function startVoice() {
                         .transcript;
             }
 
+
             document
-                .getElementById("messageInput")
-                .value = text;
+                .getElementById(
+                    "messageInput"
+                )
+                .value =
+                text;
         };
 
 
@@ -3156,7 +4344,7 @@ function startVoice() {
         function() {
 
             mic.classList.remove(
-                "listening"
+                "mic-listening"
             );
 
             recognition = null;
@@ -3167,7 +4355,7 @@ function startVoice() {
         function() {
 
             mic.classList.remove(
-                "listening"
+                "mic-listening"
             );
 
             recognition = null;
@@ -3189,40 +4377,103 @@ async function loadRecents() {
             "/api/chats"
         );
 
-    if (!res.ok) return;
+
+    if (!res.ok)
+        return;
+
 
     const data =
         await res.json();
 
-    const recents =
-        document
-            .getElementById("recents");
 
-    recents.innerHTML = "";
+    const box =
+        document.getElementById(
+            "recents"
+        );
 
 
-    data.chats.forEach(chat => {
+    box.innerHTML = "";
 
-        const div =
-            document
-                .createElement("div");
 
-        div.className =
-            "recent";
+    data.chats.forEach(
+        chat => {
 
-        div.textContent =
-            chat.title ||
-            "New Chat";
+            const row =
+                document.createElement(
+                    "div"
+                );
 
-        div.onclick =
-            function() {
 
-                openChat(chat.id);
-            };
+            row.className =
+                "recent-row";
 
-        recents.appendChild(div);
 
-    });
+            const title =
+                document.createElement(
+                    "button"
+                );
+
+
+            title.className =
+                "recent-title";
+
+
+            title.textContent =
+                chat.title;
+
+
+            title.onclick =
+                () => openChat(
+                    chat.id
+                );
+
+
+            const options =
+                document.createElement(
+                    "button"
+                );
+
+
+            options.className =
+                "recent-options";
+
+
+            options.textContent =
+                "•••";
+
+
+            options.onclick =
+                (event) => {
+
+                    event.stopPropagation();
+
+                    if (
+                        confirm(
+                            "Delete this chat?"
+                        )
+                    ) {
+
+                        deleteChat(
+                            chat.id
+                        );
+                    }
+                };
+
+
+            row.appendChild(
+                title
+            );
+
+            row.appendChild(
+                options
+            );
+
+
+            box.appendChild(
+                row
+            );
+        }
+    );
 }
 
 
@@ -3234,63 +4485,166 @@ async function openChat(id) {
 
     const res =
         await fetch(
-            "/api/chats/" + id
+            "/api/chats/" +
+            id
         );
 
-    if (!res.ok) return;
+
+    if (!res.ok)
+        return;
+
 
     const data =
         await res.json();
+
 
     currentChatId =
         id;
 
 
     const chatbox =
-        document
-            .getElementById("chatbox");
+        document.getElementById(
+            "chatbox"
+        );
+
 
     chatbox.innerHTML = "";
 
 
     data.messages.forEach(
-        msg => {
-
-            const div =
-                document
-                    .createElement("div");
+        message => {
 
             if (
-                msg.role === "user"
+                message.role ===
+                "user"
             ) {
 
-                div.className =
-                    "message user-message";
-
-                div.textContent =
-                    msg.content;
+                addUserText(
+                    message.content
+                );
 
             } else {
 
-                div.className =
-                    "message assistant-message";
-
-                div.innerHTML =
-                    marked.parse(
-                        msg.content
-                    );
-
-                formatCode(div);
+                addAssistant(
+                    message.content
+                );
             }
-
-            chatbox.appendChild(div);
-
         }
     );
 
 
     chatbox.scrollTop =
         chatbox.scrollHeight;
+
+
+    closeSidebar();
+}
+
+
+/* ============================================================
+   DELETE CHAT
+============================================================ */
+
+async function deleteChat(id) {
+
+    await fetch(
+        "/api/chats/" +
+        id,
+        {
+            method: "DELETE"
+        }
+    );
+
+
+    if (
+        currentChatId === id
+    ) {
+        newChat();
+    }
+
+
+    loadRecents();
+}
+
+
+/* ============================================================
+   SEARCH
+============================================================ */
+
+async function searchChats() {
+
+    const query =
+        prompt(
+            "Search chats"
+        );
+
+
+    if (!query)
+        return;
+
+
+    const res =
+        await fetch(
+            "/api/chats"
+        );
+
+
+    if (!res.ok)
+        return;
+
+
+    const data =
+        await res.json();
+
+
+    const box =
+        document.getElementById(
+            "recents"
+        );
+
+
+    box.innerHTML = "";
+
+
+    data.chats
+        .filter(
+            chat =>
+                chat.title
+                    .toLowerCase()
+                    .includes(
+                        query.toLowerCase()
+                    )
+        )
+        .forEach(
+            chat => {
+
+                const row =
+                    document.createElement(
+                        "div"
+                    );
+
+
+                row.className =
+                    "recent-row";
+
+
+                row.innerHTML = `
+                    <button
+                        class="recent-title"
+                        onclick="openChat(${chat.id})"
+                    >
+                        ${escapeHtml(
+                            chat.title
+                        )}
+                    </button>
+                `;
+
+
+                box.appendChild(
+                    row
+                );
+            }
+        );
 }
 
 
@@ -3301,7 +4655,9 @@ async function openChat(id) {
 function openAccount() {
 
     document
-        .getElementById("accountModal")
+        .getElementById(
+            "accountModal"
+        )
         .classList
         .remove("hidden");
 }
@@ -3314,25 +4670,28 @@ function openAccount() {
 function openUpgrade() {
 
     document
-        .getElementById("upgradeModal")
+        .getElementById(
+            "upgradeModal"
+        )
         .classList
         .remove("hidden");
 }
 
 
 /* ============================================================
-   CLOSE MODALS
+   MODALS
 ============================================================ */
 
 function closeModals() {
 
     document
-        .querySelectorAll(".modal")
+        .querySelectorAll(
+            ".modal"
+        )
         .forEach(
-            modal =>
-                modal.classList.add(
-                    "hidden"
-                )
+            x =>
+                x.classList
+                    .add("hidden")
         );
 }
 
@@ -3348,12 +4707,14 @@ async function selectPlan(plan) {
             "/api/upgrade",
             {
                 method: "POST",
+
                 headers: {
                     "Content-Type":
                         "application/json"
                 },
+
                 body: JSON.stringify({
-                    plan
+                    plan: plan
                 })
             }
         );
@@ -3379,7 +4740,7 @@ async function selectPlan(plan) {
 
         alert(
             data.detail ||
-            "Plan change failed."
+            "Plan update failed."
         );
 
         return;
@@ -3419,18 +4780,20 @@ async function openAdmin() {
 
 
     document
-        .getElementById("adminStats")
+        .getElementById(
+            "adminStats"
+        )
         .innerHTML = `
             <p>
                 Users: ${stats.users}
             </p>
 
             <p>
-                Messages: ${stats.messages}
+                Chats: ${stats.chats}
             </p>
 
             <p>
-                Chats: ${stats.chats}
+                Messages: ${stats.messages}
             </p>
         `;
 
@@ -3446,16 +4809,18 @@ async function openAdmin() {
 
 
     document
-        .getElementById("adminUsers")
+        .getElementById(
+            "adminUsers"
+        )
         .innerHTML =
         users.users
             .map(
                 user => `
                     <div
                         style="
-                            padding:8px;
+                            padding:10px;
                             border-bottom:
-                                1px solid #eee;
+                                1px solid #333;
                         "
                     >
                         <b>
@@ -3473,9 +4838,10 @@ async function openAdmin() {
 
                         <br>
 
-                        Created:
+                        Last active:
                         ${escapeHtml(
-                            user.created_at
+                            user.last_active ||
+                            ""
                         )}
                     </div>
                 `
@@ -3494,16 +4860,18 @@ async function openAdmin() {
 
 
     document
-        .getElementById("adminActivity")
+        .getElementById(
+            "adminActivity"
+        )
         .innerHTML =
         activity.activity
             .map(
                 item => `
                     <div
                         style="
-                            padding:8px;
+                            padding:10px;
                             border-bottom:
-                                1px solid #eee;
+                                1px solid #333;
                         "
                     >
                         <b>
@@ -3532,21 +4900,92 @@ async function openAdmin() {
 
 
     document
-        .getElementById("adminModal")
+        .getElementById(
+            "adminModal"
+        )
         .classList
         .remove("hidden");
 }
 
 
 /* ============================================================
-   ESCAPE HTML
+   OTHER SIDEBAR OPTIONS
+============================================================ */
+
+function openLibrary() {
+
+    alert(
+        "Library"
+    );
+}
+
+
+function openProjects() {
+
+    alert(
+        "Projects"
+    );
+}
+
+
+function openScheduled() {
+
+    alert(
+        "Scheduled"
+    );
+}
+
+
+function openPlugins() {
+
+    alert(
+        "Plugins"
+    );
+}
+
+
+function openCodex() {
+
+    alert(
+        "Codex"
+    );
+}
+
+
+function openSettings() {
+
+    alert(
+        "Settings"
+    );
+}
+
+
+function openHelp() {
+
+    alert(
+        "Help"
+    );
+}
+
+
+function recentOptions() {
+
+    alert(
+        "Recent chat options"
+    );
+}
+
+
+/* ============================================================
+   ESCAPE
 ============================================================ */
 
 function escapeHtml(text) {
 
     const div =
-        document
-            .createElement("div");
+        document.createElement(
+            "div"
+        );
 
     div.textContent =
         text || "";
@@ -3564,6 +5003,7 @@ loadApp();
 </script>
 
 </body>
+
 </html>
 """
 
@@ -3572,8 +5012,12 @@ loadApp();
 # ROOT
 # ============================================================
 
-@app.get("/", response_class=HTMLResponse)
+@app.get(
+    "/",
+    response_class=HTMLResponse
+)
 async def root():
 
-    return HTMLResponse(HTML)
-
+    return HTMLResponse(
+        HTML
+    )
