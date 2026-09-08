@@ -8,6 +8,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 try:
@@ -30,11 +31,27 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 app = FastAPI(title=APP_TITLE)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if genai and GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-CREATOR_REPLY = "ನನ್ನನ್ನು Nagesh Nirale ಅವರು ರಚಿಸಿದ್ದಾರೆ."
+CREATOR_REPLY = r"""ನನ್ನನ್ನು **Nagesh Nirale** ಅವರು ರಚಿಸಿದ್ದಾರೆ.
+
+**Nagesh Nirale — Ethical Hacker**
+
+<div class="creator-profile">
+  <div class="creator-photos">
+    <img src="/static/nagesh-profile-1.jpg" alt="Nagesh Nirale profile photo" onclick="openCreatorPhoto(this.src)">
+    <img src="/static/nagesh-profile-2.jpg" alt="Nagesh Nirale profile photo" onclick="openCreatorPhoto(this.src)">
+  </div>
+  <div class="creator-links">
+    <a href="https://www.instagram.com/armor_728/" target="_blank" rel="noopener noreferrer">📸 Instagram — @armor_728</a>
+    <a href="https://in.linkedin.com/in/nagesh-nirale-256a1b3b4" target="_blank" rel="noopener noreferrer">💼 LinkedIn — Nagesh Nirale</a>
+  </div>
+</div>
+
+ನೀನು ಕೇಳಿದಾಗ ಮಾತ್ರ ಈ creator/profile information ತೋರಿಸಲಾಗುತ್ತದೆ."""
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -609,7 +626,7 @@ html,body{margin:0;width:100%;height:100%;font-family:Arial,Helvetica,sans-serif
 button,input,textarea{font:inherit}
 button{cursor:pointer}
 .app{display:flex;width:100%;height:100dvh;overflow:hidden}
-.sidebar{width:300px;flex:0 0 300px;height:100dvh;background:#171717;color:#fff;border-right:1px solid #ddd;display:flex;flex-direction:column;transition:width .2s,transform .25s;overflow:hidden;z-index:1000}
+.sidebar{width:320px;flex:0 0 320px;height:100dvh;background:#171717;color:#fff;border-right:1px solid #ddd;display:flex;flex-direction:column;transition:width .2s,transform .25s;overflow:hidden;z-index:1000}
 .sidebar.closed{width:0;flex-basis:0;border:0}
 .sidebar-top{padding:12px}
 .side-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
@@ -654,18 +671,19 @@ button{cursor:pointer}
 .msg code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .code-wrap{position:relative}
 .code-actions{position:absolute;right:8px;top:8px;display:flex;gap:5px}.copy-code,.download-code{border:1px solid #555;background:#222;color:#fff;border-radius:6px;padding:5px 8px;font-size:12px}
-.thinking{color:#777;font-style:italic;padding:10px 5px}
+.thinking{color:#777;font-style:italic;padding:10px 5px}.creator-profile{margin-top:12px;padding:12px;border:1px solid #ddd;border-radius:16px;background:#fafafa}.creator-photos{display:flex;gap:10px;flex-wrap:wrap}.creator-photos img{width:190px;height:230px;object-fit:cover;border-radius:12px;cursor:zoom-in;border:1px solid #ddd}.creator-links{display:flex;flex-direction:column;gap:8px;margin-top:12px}.creator-links a{color:#1769aa;text-decoration:none;font-weight:600}.creator-links a:hover{text-decoration:underline}.photo-lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:5000;align-items:center;justify-content:center;padding:20px}.photo-lightbox.open{display:flex}.photo-lightbox img{max-width:95vw;max-height:92vh;object-fit:contain;border-radius:10px}.photo-lightbox button{position:absolute;right:18px;top:18px;width:42px;height:42px;border:0;border-radius:50%;background:#fff;color:#111;font-size:25px}
 .footer{padding:10px 14px calc(10px + env(safe-area-inset-bottom));background:#fff}
 .composer{max-width:850px;margin:auto;border:1px solid #ccc;border-radius:18px;display:flex;align-items:flex-end;gap:6px;padding:7px;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.05)}
 .composer textarea{flex:1;min-width:0;max-height:150px;resize:none;border:0;outline:0;padding:9px 6px;font-size:15px}
 .round{width:40px;height:40px;flex:0 0 40px;border:0;border-radius:50%;background:transparent;font-size:20px}
 .round:hover{background:#eee}
+.photo-pending{display:none;max-width:850px;margin:0 auto 7px;padding:7px 10px;border:1px solid #ddd;border-radius:12px;background:#fafafa;align-items:center;gap:10px}.photo-pending.open{display:flex}.photo-pending img{width:52px;height:52px;border-radius:9px;object-fit:cover}.photo-pending-name{flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.photo-remove{border:0;background:#eee;border-radius:50%;width:30px;height:30px}
 .send{background:#111;color:#fff}
 .plus-menu{display:none;position:absolute;bottom:75px;left:14px;width:220px;background:#fff;border:1px solid #ddd;border-radius:13px;padding:7px;box-shadow:0 8px 30px rgba(0,0,0,.15);z-index:1200}
 .plus-menu.open{display:block}
 .plus-item{display:block;width:100%;border:0;background:transparent;text-align:left;padding:11px;border-radius:9px}
 .plus-item:hover{background:#f1f1f1}
-.overlay{display:none}
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.48);z-index:999}
 .auth{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;align-items:center;justify-content:center;padding:18px}
 .auth.open{display:flex}
 .auth-card{width:100%;max-width:400px;background:#fff;border-radius:18px;padding:24px;box-shadow:0 15px 50px rgba(0,0,0,.25)}
@@ -765,6 +783,7 @@ button{cursor:pointer}
   </div>
 
   <footer class="footer">
+    <div id="photoPending" class="photo-pending"><img id="photoPendingImg"><div id="photoPendingName" class="photo-pending-name"></div><button class="photo-remove" onclick="removePendingPhoto()">×</button></div>
     <div class="composer">
       <button class="round" onclick="togglePlus()" aria-label="Attach">＋</button>
       <textarea id="messageInput" rows="1" placeholder="Message Nirale AI..." onkeydown="handleKey(event)"></textarea>
@@ -798,6 +817,8 @@ button{cursor:pointer}
    </div>
  </div>
 </div>
+
+<div id="creatorLightbox" class="photo-lightbox" onclick="closeCreatorPhoto(event)"><button onclick="closeCreatorPhoto(event)">×</button><img id="creatorLightboxImg" alt="Profile photo"></div>
 
 <div id="adminModal" class="auth">
  <div class="auth-card" style="max-width:900px;max-height:90dvh;overflow:auto">
@@ -846,50 +867,27 @@ function togglePlus(){
   plusMenu.classList.toggle("open");
 }
 
+let pendingPhoto = null;
 function handleSelectedFile(file, kind){
   if(!file) return;
   plusMenu.classList.remove("open");
   if(kind === "photo" || (file.type && file.type.startsWith("image/"))){
+    pendingPhoto = file;
     const url = URL.createObjectURL(file);
-    const row = document.createElement("div");
-    row.className = "msg-row user";
-    const msg = document.createElement("div");
-    msg.className = "msg user photo-msg";
-    const img = document.createElement("img");
-    img.src = url;
-    img.alt = file.name || "Selected photo";
-    img.style.maxWidth = "280px";
-    img.style.maxHeight = "280px";
-    img.style.display = "block";
-    img.style.borderRadius = "12px";
-    img.style.objectFit = "contain";
-    msg.appendChild(img);
-    const label = document.createElement("div");
-    label.textContent = file.name || "Photo selected";
-    label.style.marginTop = "6px";
-    label.style.fontSize = "12px";
-    label.style.opacity = ".75";
-    msg.appendChild(label);
-    row.appendChild(msg);
-    chatbox.appendChild(row);
-    chatbox.scrollTop = chatbox.scrollHeight;
+    document.getElementById("photoPendingImg").src = url;
+    document.getElementById("photoPendingName").textContent = file.name || "Photo selected";
+    document.getElementById("photoPending").classList.add("open");
+    input.focus();
     return;
   }
   addMessage("user", "📎 " + (file.name || "File selected"));
 }
+function removePendingPhoto(){
+  pendingPhoto = null;
+  document.getElementById("photoPending").classList.remove("open");
+  document.getElementById("photoPendingImg").removeAttribute("src");
+}
 
-document.getElementById("photoInput").addEventListener("change", function(){
-  handleSelectedFile(this.files && this.files[0], "photo");
-  this.value = "";
-});
-document.getElementById("cameraInput").addEventListener("change", function(){
-  handleSelectedFile(this.files && this.files[0], "photo");
-  this.value = "";
-});
-document.getElementById("fileInput").addEventListener("change", function(){
-  handleSelectedFile(this.files && this.files[0], "file");
-  this.value = "";
-});
 function showInfo(name){
   plusMenu.classList.remove("open");
   alert(name + " is ready for Nirale AI.");
@@ -1088,6 +1086,15 @@ function addMessage(role,text,scroll=true){
   chatbox.appendChild(row);
   if(scroll) chatbox.scrollTop=chatbox.scrollHeight;
 }
+function openCreatorPhoto(src){
+  document.getElementById("creatorLightboxImg").src=src;
+  document.getElementById("creatorLightbox").classList.add("open");
+}
+function closeCreatorPhoto(e){
+  if(e && e.target && e.target.tagName === "IMG") return;
+  document.getElementById("creatorLightbox").classList.remove("open");
+}
+
 function thinkingLanguage(text){
   if(/[ಕ-ೞ]/.test(text)) return "ಯೋಚಿಸುತ್ತಿದೆ...";
   if(/[अ-ह]/.test(text)) return "सोच रहा हूँ...";
@@ -1104,15 +1111,24 @@ function handleKey(e){
 }
 async function sendMessage(){
   const text=input.value.trim();
-  if(!text)return;
+  if(!text && !pendingPhoto)return;
   plusMenu.classList.remove("open");
+  const photoToSend = pendingPhoto;
+  if(photoToSend){
+    const url = URL.createObjectURL(photoToSend);
+    const row = document.createElement("div"); row.className="msg-row user";
+    const msg = document.createElement("div"); msg.className="msg user photo-msg";
+    const img = document.createElement("img"); img.src=url; img.alt=photoToSend.name||"Selected photo"; img.style.maxWidth="280px"; img.style.maxHeight="280px"; img.style.display="block"; img.style.borderRadius="12px"; img.style.objectFit="contain";
+    msg.appendChild(img); row.appendChild(msg); chatbox.appendChild(row);
+    removePendingPhoto();
+  }
   input.value="";
   input.style.height="auto";
 
   const welcome=document.getElementById("welcome");
   if(welcome) welcome.remove();
 
-  addMessage("user",text);
+  if(text) addMessage("user",text);
 
   const t=document.createElement("div");
   t.className="thinking";
@@ -1125,7 +1141,7 @@ async function sendMessage(){
       method:"POST",
       headers:{"Content-Type":"application/json"},
       credentials:"same-origin",
-      body:JSON.stringify({message:text,chat_id:currentChatId})
+      body:JSON.stringify({message:text || "I uploaded a photo. Please help me with this image.",chat_id:currentChatId})
     });
     const raw=await r.text();
     let d;
