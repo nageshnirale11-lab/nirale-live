@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 try:
@@ -15,9 +15,17 @@ try:
 except Exception:
     genai = None
 
+try:
+    from google.oauth2 import id_token
+    from google.auth.transport import requests as google_requests
+except Exception:
+    id_token = None
+    google_requests = None
+
 APP_TITLE = "Nirale AI"
 DB_PATH = os.getenv("NIRALE_DB", "nirale.db")
 OWNER_EMAIL = os.getenv("OWNER_EMAIL", "").strip().lower()
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
@@ -46,8 +54,10 @@ def init_db():
         salt TEXT NOT NULL,
         plan TEXT DEFAULT 'Free',
         created_at TEXT NOT NULL,
-        last_active TEXT NOT NULL
+        last_active TEXT NOT NULL,
+        google_sub TEXT
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL;
     CREATE TABLE IF NOT EXISTS sessions (
         token TEXT PRIMARY KEY,
         user_id INTEGER NOT NULL,
@@ -92,6 +102,10 @@ def migrate_schema():
         cols = [r[1] for r in c.execute("PRAGMA table_info(usage)").fetchall()]
         if "guest_token" not in cols:
             c.execute("ALTER TABLE usage ADD COLUMN guest_token TEXT")
+        cols = [r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()]
+        if "google_sub" not in cols:
+            c.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL")
         c.commit()
     finally:
         c.close()
@@ -114,6 +128,9 @@ class AuthBody(BaseModel):
 class ChatBody(BaseModel):
     message: str
     chat_id: Optional[int] = None
+
+class GoogleBody(BaseModel):
+    credential: str
 
 def hash_password(password, salt=None):
     salt = salt or secrets.token_hex(16)
@@ -224,7 +241,6 @@ def signup(body: AuthBody, request: Request):
         return {"ok": False, "error": "An account with this email already exists."}
     c.close()
 
-    from fastapi.responses import JSONResponse
     r = JSONResponse({"ok": True})
     r.set_cookie("nirale_session", token, httponly=True, samesite="lax", secure=False, max_age=60*60*24*30)
     r.delete_cookie("nirale_guest_count")
@@ -249,8 +265,48 @@ def login(body: AuthBody, request: Request):
     c.commit()
     c.close()
 
-    from fastapi.responses import JSONResponse
     r = JSONResponse({"ok": True})
+    r.set_cookie("nirale_session", token, httponly=True, samesite="lax", secure=False, max_age=60*60*24*30)
+    r.delete_cookie("nirale_guest_count")
+    r.delete_cookie("nirale_guest_id")
+    return r
+
+@app.post("/api/google-login")
+def google_login(body: GoogleBody, request: Request):
+    if not GOOGLE_CLIENT_ID:
+        return {"ok": False, "error": "Google Login is not configured yet. Set GOOGLE_CLIENT_ID in the server environment."}
+    if not id_token or not google_requests:
+        return {"ok": False, "error": "Google authentication package is not installed on the server."}
+    try:
+        info = id_token.verify_oauth2_token(body.credential, google_requests.Request(), GOOGLE_CLIENT_ID)
+        email = str(info.get("email", "")).strip().lower()
+        sub = str(info.get("sub", "")).strip()
+        email_verified = bool(info.get("email_verified", False))
+        if not email or not sub or not email_verified:
+            return {"ok": False, "error": "Google account email could not be verified."}
+    except Exception:
+        return {"ok": False, "error": "Google sign-in verification failed."}
+
+    c = db()
+    user = c.execute("SELECT * FROM users WHERE google_sub=?", (sub,)).fetchone()
+    if not user:
+        user = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        if user:
+            c.execute("UPDATE users SET google_sub=?, last_active=? WHERE id=?", (sub, now(), user["id"]))
+        else:
+            ph, salt = hash_password(secrets.token_urlsafe(32))
+            cur = c.execute("""
+                INSERT INTO users(email,password_hash,salt,plan,created_at,last_active,google_sub)
+                VALUES(?,?,?,?,?,?,?)
+            """, (email, ph, salt, "Free", now(), now(), sub))
+            user = c.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
+    token = secrets.token_urlsafe(32)
+    c.execute("INSERT INTO sessions VALUES(?,?,?)", (token, user["id"], now()))
+    migrate_guest_data(c, guest_token(request), user["id"], user["email"], user["plan"])
+    c.execute("UPDATE users SET last_active=? WHERE id=?", (now(), user["id"]))
+    c.commit()
+    c.close()
+    r = JSONResponse({"ok": True, "email": user["email"]})
     r.set_cookie("nirale_session", token, httponly=True, samesite="lax", secure=False, max_age=60*60*24*30)
     r.delete_cookie("nirale_guest_count")
     r.delete_cookie("nirale_guest_id")
@@ -264,7 +320,6 @@ def logout(request: Request):
         c.execute("DELETE FROM sessions WHERE token=?", (token,))
     c.commit()
     c.close()
-    from fastapi.responses import JSONResponse
     r = JSONResponse({"ok": True})
     r.delete_cookie("nirale_session")
     return r
@@ -306,29 +361,39 @@ def chats(request: Request):
 @app.get("/api/chats/{chat_id}")
 def get_chat(chat_id: int, request: Request):
     u = get_user(request)
-    if not u:
-        return {"ok": False, "error": "Login required."}
+    token = guest_token(request)
     c = db()
-    chat = c.execute(
-        "SELECT * FROM chats WHERE id=? AND user_id=?", (chat_id, u["id"])
-    ).fetchone()
-    msgs = c.execute(
-        "SELECT role,content,created_at FROM messages WHERE chat_id=? ORDER BY id",
-        (chat_id,)
-    ).fetchall()
-    c.close()
+    if u:
+        chat = c.execute("SELECT * FROM chats WHERE id=? AND user_id=?", (chat_id, u["id"])).fetchone()
+    elif token:
+        chat = c.execute("SELECT * FROM chats WHERE id=? AND guest_token=?", (chat_id, token)).fetchone()
+    else:
+        c.close()
+        return {"ok": False, "error": "Login required."}
     if not chat:
+        c.close()
         return {"ok": False, "error": "Chat not found."}
+    msgs = c.execute("SELECT role,content,created_at FROM messages WHERE chat_id=? ORDER BY id", (chat_id,)).fetchall()
+    c.close()
     return {"ok": True, "chat": dict(chat), "messages": [dict(x) for x in msgs]}
 
 @app.delete("/api/chats/{chat_id}")
 def delete_chat(chat_id: int, request: Request):
     u = get_user(request)
-    if not u:
-        return {"ok": False, "error": "Login required."}
+    token = guest_token(request)
     c = db()
-    c.execute("DELETE FROM messages WHERE chat_id=? AND chat_id IN (SELECT id FROM chats WHERE user_id=?)", (chat_id, u["id"]))
-    c.execute("DELETE FROM chats WHERE id=? AND user_id=?", (chat_id, u["id"]))
+    if u:
+        chat = c.execute("SELECT id FROM chats WHERE id=? AND user_id=?", (chat_id, u["id"])).fetchone()
+    elif token:
+        chat = c.execute("SELECT id FROM chats WHERE id=? AND guest_token=?", (chat_id, token)).fetchone()
+    else:
+        c.close()
+        return {"ok": False, "error": "Login required."}
+    if not chat:
+        c.close()
+        return {"ok": False, "error": "Chat not found."}
+    c.execute("DELETE FROM messages WHERE chat_id=?", (chat_id,))
+    c.execute("DELETE FROM chats WHERE id=?", (chat_id,))
     c.commit()
     c.close()
     return {"ok": True}
@@ -386,7 +451,7 @@ def chat(body: ChatBody, request: Request):
             title = re.sub(r"\s+", " ", message)[:55] or "New Chat"
             cur = c.execute("""
                 INSERT INTO chats(user_id,title,created_at,updated_at)
-                VALUES(?,?,?,?,?)
+                VALUES(?,?,?,?)
             """, (u["id"], title, now(), now()))
             chat_id = cur.lastrowid
 
@@ -461,8 +526,9 @@ def admin_users(request: Request):
         return {"ok": False, "error": "Admin access denied."}
     c = db()
     rows = c.execute("""
-        SELECT id,email,plan,created_at,last_active
-        FROM users ORDER BY last_active DESC
+        SELECT u.id,u.email,u.plan,u.created_at,u.last_active,
+               (SELECT COUNT(*) FROM usage x WHERE x.user_id=u.id) AS message_count
+        FROM users u ORDER BY u.last_active DESC
     """).fetchall()
     c.close()
     return {"ok": True, "users": [dict(x) for x in rows]}
@@ -487,9 +553,10 @@ def admin_stats(request: Request):
         return {"ok": False, "error": "Admin access denied."}
     c = db()
     users = c.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]
+    guest_users = c.execute("SELECT COUNT(DISTINCT guest_token) n FROM usage WHERE guest_token IS NOT NULL").fetchone()["n"]
     messages = c.execute("SELECT COUNT(*) n FROM usage").fetchone()["n"]
     c.close()
-    return {"ok": True, "users": users, "messages": messages}
+    return {"ok": True, "users": users, "guest_users": guest_users, "total_users": users + guest_users, "messages": messages}
 
 HTML = r"""<!doctype html>
 <html lang="en">
@@ -497,6 +564,7 @@ HTML = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Nirale AI</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
@@ -567,7 +635,7 @@ button{cursor:pointer}
 .auth.open{display:flex}
 .auth-card{width:100%;max-width:400px;background:#fff;border-radius:18px;padding:24px;box-shadow:0 15px 50px rgba(0,0,0,.25)}
 .auth-card h2{margin-top:0}
-.password-wrap{position:relative}.auth-card input{display:block;width:100%;height:46px;margin:10px 0;border:1px solid #ccc;border-radius:10px;padding:0 45px 0 12px}.password-toggle{position:absolute;right:8px;top:10px;height:46px;width:38px;border:0;background:transparent;color:#555;font-size:18px}
+.password-wrap{position:relative}.auth-card input{display:block;width:100%;height:46px;margin:10px 0;border:1px solid #ccc;border-radius:10px;padding:0 45px 0 12px}.password-toggle{position:absolute;right:8px;top:10px;height:46px;width:38px;border:0;background:transparent;color:#555;font-size:18px;display:flex;align-items:center;justify-content:center}
 .auth-primary{width:100%;height:46px;border:0;border-radius:10px;background:#111;color:#fff;margin-top:8px}
 .auth-switch{text-align:center;margin-top:16px;font-size:14px}
 .auth-switch a{color:#111;font-weight:700;cursor:pointer;text-decoration:underline}
@@ -577,9 +645,9 @@ button{cursor:pointer}
 .pop-btn{width:100%;height:40px;border:0;background:transparent;text-align:left;border-radius:8px;padding:0 10px}
 .pop-btn:hover{background:#eee}
 @media(max-width:700px){
- .sidebar{position:fixed;left:0;top:0;width:300px;max-width:86vw;transform:translateX(-100%);background:#171717;box-shadow:8px 0 30px rgba(0,0,0,.35)}
+ .sidebar{position:fixed;inset:0 auto 0 0;width:100vw;max-width:none;height:100dvh;flex:0 0 100vw;transform:translateX(-100%);background:#171717;box-shadow:8px 0 30px rgba(0,0,0,.45);z-index:2000}
  .sidebar.open{transform:translateX(0)}
- .sidebar.closed{width:300px;flex-basis:auto}
+ .sidebar.closed{width:100vw;flex-basis:100vw;transform:translateX(-100%)}
  .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999}
  .overlay.open{display:block}
  .header{height:56px;flex-basis:56px;padding:0 8px}
@@ -679,10 +747,14 @@ button{cursor:pointer}
  <div class="auth-card">
    <button class="close-auth" onclick="closeAuth()">×</button>
    <h2 id="authTitle">Login to Nirale AI</h2>
+  <div id="googleLoginArea" style="margin:10px 0 14px">
+    <button type="button" id="googleLoginBtn" class="auth-primary" style="background:#fff;color:#222;border:1px solid #ccc;margin-top:0" onclick="googleLogin()">G&nbsp;&nbsp; Continue with Google</button>
+    <div style="text-align:center;color:#888;font-size:12px;margin:10px 0">OR</div>
+  </div>
    <input id="authEmail" type="email" placeholder="Email" autocomplete="email">
    <div class="password-wrap">
      <input id="authPassword" type="password" placeholder="Nirale AI password" autocomplete="current-password">
-     <button type="button" class="password-toggle" onclick="togglePassword()" aria-label="Show password">◉</button>
+     <button type="button" class="password-toggle" onclick="togglePassword()" aria-label="Show password">👁</button>
    </div>
    <button class="auth-primary" onclick="submitAuth()">Continue</button>
    <div id="authMessage" style="color:#b00020;margin-top:9px;font-size:13px"></div>
@@ -767,6 +839,28 @@ function openAuth(mode){
 function closeAuth(){
   document.getElementById("auth").classList.remove("open");
 }
+async function googleLogin(){
+  const out=document.getElementById("authMessage");
+  if(!window.google || !google.accounts || !google.accounts.id){
+    out.textContent="Google Sign-In is loading. Please wait a moment and try again.";
+    return;
+  }
+  const clientId = "__GOOGLE_CLIENT_ID__";
+  if(clientId === "__GOOGLE_CLIENT_ID__"){
+    out.textContent="Owner: set GOOGLE_CLIENT_ID in Render Environment Variables first.";
+    return;
+  }
+  google.accounts.id.initialize({client_id:clientId, callback: async (response)=>{
+    try{
+      const r=await fetch("/api/google-login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({credential:response.credential})});
+      const d=await r.json();
+      if(!d.ok){out.textContent=d.error||"Google login failed.";return;}
+      closeAuth(); await loadMe(); await loadRecents();
+    }catch(e){out.textContent="Google login failed.";}
+  }});
+  google.accounts.id.prompt();
+}
+
 function switchAuth(mode){
   authMode = mode;
   document.getElementById("authTitle").textContent =
@@ -780,8 +874,8 @@ function switchAuth(mode){
 function togglePassword(){
   const p=document.getElementById("authPassword");
   const b=document.querySelector(".password-toggle");
-  if(p.type === "password"){ p.type="text"; b.textContent="◉"; b.title="Hide password"; }
-  else { p.type="password"; b.textContent="◉"; b.title="Show password"; }
+  if(p.type === "password"){ p.type="text"; b.textContent="👁"; b.title="Hide password"; }
+  else { p.type="password"; b.textContent="👁"; b.title="Show password"; }
 }
 async function submitAuth(){
   const email = document.getElementById("authEmail").value.trim();
@@ -962,8 +1056,8 @@ async function openAdmin(){
     fetch("/api/admin/activity").then(r=>r.json())
   ]);
   if(!st.ok){ document.getElementById("adminStats").textContent="Admin access denied."; return; }
-  document.getElementById("adminStats").textContent=`Users: ${st.users} | Messages: ${st.messages}`;
-  document.getElementById("adminUsers").innerHTML=(us.users||[]).map(x=>`<div style="padding:9px;border-bottom:1px solid #eee"><b>${escapeHtml(x.email)}</b> · ${escapeHtml(x.plan)} · Messages: ${escapeHtml(String((ac.activity||[]).filter(a=>a.email===x.email).length))}<br><small>Created: ${escapeHtml(x.created_at)} · Last active: ${escapeHtml(x.last_active)}</small></div>`).join("") || "No users";
+  document.getElementById("adminStats").textContent=`Registered: ${st.users} | Guest: ${st.guest_users||0} | Total: ${st.total_users||st.users} | Messages: ${st.messages}`;
+  document.getElementById("adminUsers").innerHTML=(us.users||[]).map(x=>`<div style="padding:10px;border-bottom:1px solid #eee"><b>${escapeHtml(x.email)}</b> · ${escapeHtml(x.plan)} · Messages: ${escapeHtml(String(x.message_count||0))}<br><small>Created: ${escapeHtml(x.created_at)} · Last active: ${escapeHtml(x.last_active)}</small></div>`).join("") || "No users";
   document.getElementById("adminActivity").innerHTML=(ac.activity||[]).map(x=>`<div style="padding:9px;border-bottom:1px solid #eee"><b>${escapeHtml(x.email||"Guest")}</b><br>${escapeHtml(x.question)}<br><small>${escapeHtml(x.created_at)} · ${escapeHtml(x.plan)}</small></div>`).join("") || "No activity";
 }
 function closeAdmin(){document.getElementById("adminModal").classList.remove("open");}
@@ -1005,6 +1099,8 @@ window.addEventListener("resize",()=>{
   if(window.innerWidth>700){
     overlay.classList.remove("open");
     sidebar.classList.remove("open");
+  }else{
+    sidebar.classList.remove("closed");
   }
 });
 loadMe();
@@ -1015,4 +1111,5 @@ loadRecents();
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return HTML
+    page = HTML.replace("__GOOGLE_CLIENT_ID__", GOOGLE_CLIENT_ID)
+    return HTMLResponse(page)
