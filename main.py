@@ -69,7 +69,9 @@ def init_db():
         title TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        guest_token TEXT
+        guest_token TEXT,
+        pinned INTEGER DEFAULT 0,
+        archived INTEGER DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,6 +101,11 @@ def migrate_schema():
         cols = [r[1] for r in c.execute("PRAGMA table_info(chats)").fetchall()]
         if "guest_token" not in cols:
             c.execute("ALTER TABLE chats ADD COLUMN guest_token TEXT")
+        cols = [r[1] for r in c.execute("PRAGMA table_info(chats)").fetchall()]
+        if "pinned" not in cols:
+            c.execute("ALTER TABLE chats ADD COLUMN pinned INTEGER DEFAULT 0")
+        if "archived" not in cols:
+            c.execute("ALTER TABLE chats ADD COLUMN archived INTEGER DEFAULT 0")
         cols = [r[1] for r in c.execute("PRAGMA table_info(usage)").fetchall()]
         if "guest_token" not in cols:
             c.execute("ALTER TABLE usage ADD COLUMN guest_token TEXT")
@@ -344,13 +351,13 @@ def chats(request: Request):
     c = db()
     if u:
         rows = c.execute("""
-            SELECT id,title,created_at,updated_at
-            FROM chats WHERE user_id=? ORDER BY updated_at DESC
+            SELECT id,title,created_at,updated_at,pinned,archived
+            FROM chats WHERE user_id=? AND archived=0 ORDER BY pinned DESC, updated_at DESC
         """, (u["id"],)).fetchall()
     elif token:
         rows = c.execute("""
-            SELECT id,title,created_at,updated_at
-            FROM chats WHERE guest_token=? ORDER BY updated_at DESC
+            SELECT id,title,created_at,updated_at,pinned,archived
+            FROM chats WHERE guest_token=? AND archived=0 ORDER BY pinned DESC, updated_at DESC
         """, (token,)).fetchall()
     else:
         c.close()
@@ -397,6 +404,34 @@ def delete_chat(chat_id: int, request: Request):
     c.commit()
     c.close()
     return {"ok": True}
+
+@app.post("/api/chats/{chat_id}/rename")
+def rename_chat(chat_id: int, request: Request):
+    u = get_user(request); token = guest_token(request)
+    new_title = (request.query_params.get("title") or "").strip()[:120]
+    if not new_title: return {"ok": False, "error": "Title required."}
+    c=db()
+    if u: row=c.execute("SELECT id FROM chats WHERE id=? AND user_id=?",(chat_id,u["id"])).fetchone()
+    else: row=c.execute("SELECT id FROM chats WHERE id=? AND guest_token=?",(chat_id,token)).fetchone() if token else None
+    if not row: c.close(); return {"ok":False,"error":"Chat not found."}
+    c.execute("UPDATE chats SET title=?, updated_at=? WHERE id=?",(new_title,now_iso(),chat_id)); c.commit(); c.close()
+    return {"ok":True}
+
+@app.post("/api/chats/{chat_id}/pin")
+def pin_chat(chat_id: int, request: Request):
+    u=get_user(request); token=guest_token(request); c=db()
+    if u: row=c.execute("SELECT id,pinned FROM chats WHERE id=? AND user_id=?",(chat_id,u["id"])).fetchone()
+    else: row=c.execute("SELECT id,pinned FROM chats WHERE id=? AND guest_token=?",(chat_id,token)).fetchone() if token else None
+    if not row: c.close(); return {"ok":False,"error":"Chat not found."}
+    c.execute("UPDATE chats SET pinned=?, updated_at=? WHERE id=?",(0 if row["pinned"] else 1,now_iso(),chat_id)); c.commit(); c.close(); return {"ok":True}
+
+@app.post("/api/chats/{chat_id}/archive")
+def archive_chat(chat_id: int, request: Request):
+    u=get_user(request); token=guest_token(request); c=db()
+    if u: row=c.execute("SELECT id FROM chats WHERE id=? AND user_id=?",(chat_id,u["id"])).fetchone()
+    else: row=c.execute("SELECT id FROM chats WHERE id=? AND guest_token=?",(chat_id,token)).fetchone() if token else None
+    if not row: c.close(); return {"ok":False,"error":"Chat not found."}
+    c.execute("UPDATE chats SET archived=1, updated_at=? WHERE id=?",(now_iso(),chat_id)); c.commit(); c.close(); return {"ok":True}
 
 @app.post("/api/chat")
 def chat(body: ChatBody, request: Request):
@@ -488,7 +523,7 @@ def chat(body: ChatBody, request: Request):
         title = re.sub(r"\s+", " ", message)[:55] or "New Chat"
         cur = c.execute("""
             INSERT INTO chats(user_id,title,created_at,updated_at,guest_token)
-            VALUES(NULL,?,?,?,?)
+            VALUES(0,?,?,?,?)
         """, (title, now(), now(), gtoken))
         chat_id = cur.lastrowid
     c.execute(
@@ -592,7 +627,7 @@ button{cursor:pointer}
 .recents{overflow:auto;flex:1;padding:0 10px}
 .recent-chat{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 10px;border-radius:9px;cursor:pointer;font-size:14px}
 .recent-chat:hover{background:#2a2a2a}
-.recent-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.recent-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}.recent-more{border:0;background:transparent;color:#aaa;font-size:20px;width:30px;height:30px;border-radius:7px}.recent-more:hover{background:#333;color:#fff}.chat-menu{position:fixed;z-index:3000;background:#fff;color:#111;border:1px solid #ddd;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.2);padding:6px;width:190px}.chat-menu button{display:block;width:100%;border:0;background:transparent;text-align:left;padding:10px;border-radius:8px}.chat-menu button:hover{background:#f0f0f0}
 .account{border-top:1px solid #333;padding:10px}
 .account-btn{width:100%;display:flex;align-items:center;gap:9px;border:0;background:transparent;border-radius:10px;padding:9px;text-align:left}
 .account-btn{color:#fff}.account-btn:hover{background:#2a2a2a}
@@ -810,6 +845,51 @@ function newChat(){
 function togglePlus(){
   plusMenu.classList.toggle("open");
 }
+
+function handleSelectedFile(file, kind){
+  if(!file) return;
+  plusMenu.classList.remove("open");
+  if(kind === "photo" || (file.type && file.type.startsWith("image/"))){
+    const url = URL.createObjectURL(file);
+    const row = document.createElement("div");
+    row.className = "msg-row user";
+    const msg = document.createElement("div");
+    msg.className = "msg user photo-msg";
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = file.name || "Selected photo";
+    img.style.maxWidth = "280px";
+    img.style.maxHeight = "280px";
+    img.style.display = "block";
+    img.style.borderRadius = "12px";
+    img.style.objectFit = "contain";
+    msg.appendChild(img);
+    const label = document.createElement("div");
+    label.textContent = file.name || "Photo selected";
+    label.style.marginTop = "6px";
+    label.style.fontSize = "12px";
+    label.style.opacity = ".75";
+    msg.appendChild(label);
+    row.appendChild(msg);
+    chatbox.appendChild(row);
+    chatbox.scrollTop = chatbox.scrollHeight;
+    return;
+  }
+  addMessage("user", "📎 " + (file.name || "File selected"));
+}
+
+document.getElementById("photoInput").addEventListener("change", function(){
+  handleSelectedFile(this.files && this.files[0], "photo");
+  this.value = "";
+});
+document.getElementById("cameraInput").addEventListener("change", function(){
+  handleSelectedFile(this.files && this.files[0], "photo");
+  this.value = "";
+});
+document.getElementById("fileInput").addEventListener("change", function(){
+  handleSelectedFile(this.files && this.files[0], "file");
+  this.value = "";
+});
 function showInfo(name){
   plusMenu.classList.remove("open");
   alert(name + " is ready for Nirale AI.");
@@ -924,11 +1004,27 @@ async function loadRecents(){
     const row=document.createElement("div");
     row.className="recent-chat";
     row.dataset.title=c.title.toLowerCase();
-    row.innerHTML=`<span class="recent-title">${escapeHtml(c.title)}</span>`;
+    row.innerHTML=`<span class="recent-title">${escapeHtml(c.title)}</span><button class="recent-more" aria-label="Chat options">⋯</button>`;
     row.onclick=()=>loadChat(c.id);
+    const more=row.querySelector(".recent-more");
+    more.onclick=(e)=>{e.stopPropagation(); showChatMenu(c.id, more);};
     box.appendChild(row);
   });
 }
+function showChatMenu(id, anchor){
+  document.querySelectorAll(".chat-menu").forEach(x=>x.remove());
+  const m=document.createElement("div"); m.className="chat-menu";
+  m.innerHTML=`<button data-a="rename">✏️ Rename</button><button data-a="pin">📌 Pin / Unpin</button><button data-a="newwindow">🪟 Open in new window</button><button data-a="archive">🗃️ Archive</button><button data-a="delete">🗑️ Delete</button>`;
+  document.body.appendChild(m);
+  const r=anchor.getBoundingClientRect(); m.style.left=Math.min(window.innerWidth-200,r.right-190)+"px"; m.style.top=Math.min(window.innerHeight-250,r.bottom+4)+"px";
+  m.querySelector('[data-a="rename"]').onclick=async()=>{ const title=prompt("Chat name", anchor.parentElement.querySelector(".recent-title").textContent); if(title){await fetch(`/api/chats/${id}/rename?title=${encodeURIComponent(title)}`,{method:"POST"}); await loadRecents();} m.remove(); };
+  m.querySelector('[data-a="pin"]').onclick=async()=>{await fetch(`/api/chats/${id}/pin`,{method:"POST"}); await loadRecents(); m.remove();};
+  m.querySelector('[data-a="archive"]').onclick=async()=>{await fetch(`/api/chats/${id}/archive`,{method:"POST"}); await loadRecents(); m.remove();};
+  m.querySelector('[data-a="delete"]').onclick=async()=>{if(confirm("Delete this chat?")){await fetch(`/api/chats/${id}`,{method:"DELETE"}); if(currentChatId===id)newChat(); await loadRecents();} m.remove();};
+  m.querySelector('[data-a="newwindow"]').onclick=()=>{window.open(location.origin+location.pathname+"?chat="+id,"_blank","noopener");m.remove();};
+  setTimeout(()=>document.addEventListener("click",function close(e){if(!m.contains(e.target)){m.remove();document.removeEventListener("click",close)}},{once:true}),0);
+}
+
 async function loadChat(id){
   const d=await fetch("/api/chats/"+id).then(r=>r.json());
   if(!d.ok)return;
@@ -960,9 +1056,17 @@ function addMessage(role,text,scroll=true){
       copy.className="copy-code";
       copy.textContent="Copy";
       copy.onclick=async()=>{
-        await navigator.clipboard.writeText(block.innerText);
-        copy.textContent="Copied";
-        setTimeout(()=>copy.textContent="Copy",1200);
+        try{
+          if(navigator.clipboard && window.isSecureContext){
+            await navigator.clipboard.writeText(block.innerText);
+          }else{
+            const ta=document.createElement("textarea");
+            ta.value=block.innerText; document.body.appendChild(ta); ta.select();
+            document.execCommand("copy"); ta.remove();
+          }
+          copy.textContent="Copied ✓";
+          setTimeout(()=>copy.textContent="Copy",1200);
+        }catch(e){ copy.textContent="Copy failed"; setTimeout(()=>copy.textContent="Copy",1200); }
       };
       const download=document.createElement("button");
       download.className="download-code";
@@ -1020,12 +1124,17 @@ async function sendMessage(){
     const r=await fetch("/api/chat",{
       method:"POST",
       headers:{"Content-Type":"application/json"},
+      credentials:"same-origin",
       body:JSON.stringify({message:text,chat_id:currentChatId})
     });
-    const d=await r.json();
+    const raw=await r.text();
+    let d;
+    try{ d=JSON.parse(raw); }catch(e){ throw new Error("Server returned HTTP "+r.status); }
+    if(!r.ok){ throw new Error(d.error || ("Server error "+r.status)); }
     t.remove();
 
     if(d.error==="LOGIN_REQUIRED"){
+      addMessage("assistant", "ಮೊದಲ 4 free questions ಮುಗಿದಿವೆ. ಮುಂದುವರಿಸಲು Login ಅಥವಾ Create account ಮಾಡಿ.");
       openAuth("login");
       return;
     }
@@ -1043,7 +1152,7 @@ async function sendMessage(){
     }
   }catch(e){
     t.remove();
-    addMessage("assistant","Connection error. Please try again.");
+    addMessage("assistant", "⚠️ "+(e.message || "Connection error. Please try again."));
   }
 }
 async function openAdmin(){
@@ -1105,6 +1214,8 @@ window.addEventListener("resize",()=>{
 });
 loadMe();
 loadRecents();
+const initialChat = new URLSearchParams(location.search).get("chat");
+if(initialChat) loadChat(Number(initialChat));
 </script>
 </body>
 </html>"""
