@@ -633,6 +633,11 @@ HTML = r"""<!doctype html>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
 <style>
 *{box-sizing:border-box}
+html,body{margin:0!important;width:100%!important;height:100%!important;min-height:100%!important;overflow:hidden!important;background:#e9e9e9!important}
+body{display:block!important}
+.app{position:fixed!important;inset:0!important;width:100vw!important;height:100dvh!important;min-height:100dvh!important;overflow:hidden!important;display:flex!important;background:#e9e9e9!important}
+.main{min-width:0!important;flex:1 1 auto!important;width:100%!important;height:100dvh!important;min-height:100dvh!important;display:flex!important;flex-direction:column!important;overflow:hidden!important;background:#e9e9e9!important}
+
 html,body{margin:0;padding:0;width:100%;height:100%;min-height:100%;font-family:Arial,Helvetica,sans-serif;background:#e9e9e9;color:#202123;overflow:hidden}
 html{background:#e9e9e9}
 body{width:100vw;height:100dvh}
@@ -670,6 +675,9 @@ button{cursor:pointer}
 .header{height:60px;flex:0 0 60px;border-bottom:1px solid #d2d2d2;display:flex;align-items:center;gap:10px;padding:0 14px;background:#e9e9e9}
 .menu-open{border:0;background:transparent;font-size:22px;width:40px;height:40px;border-radius:9px}
 .menu-open:hover{background:#f0f0f0}
+.global-search{display:flex;align-items:center;gap:7px;width:min(360px,42vw);height:40px;padding:0 11px;border:1px solid #c5c5c5;border-radius:12px;background:#fff}
+.global-search span{font-size:15px;opacity:.7}
+.global-search input{width:100%;height:100%;border:0;outline:0;background:transparent;font-size:14px;color:#222}
 .header-title{font-weight:700;flex:1}
 .upgrade{border:0;border-radius:9px;background:#111;color:#fff;padding:9px 13px}
 .chatbox{flex:1;overflow:auto;padding:25px max(14px,calc((100% - 850px)/2));scroll-behavior:smooth;background:#e9e9e9}
@@ -721,6 +729,8 @@ button{cursor:pointer}
  .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999}
  .overlay.open{display:block}
  .header{height:56px;flex-basis:56px;padding:0 8px}
+ .global-search{width:clamp(120px,38vw,210px);height:38px}
+ .global-search input{font-size:13px}
  .header-title{font-size:15px}
  .upgrade{padding:8px 10px;font-size:13px}
  .chatbox{padding:15px 9px 95px}
@@ -780,6 +790,10 @@ button{cursor:pointer}
   <header class="header">
     <button class="menu-open" onclick="openSidebar()" aria-label="Open sidebar">☰</button>
     <div class="header-title">Nirale AI</div>
+    <div class="global-search">
+      <span>🔍</span>
+      <input id="globalSearchInput" type="search" placeholder="Search chats..." autocomplete="off" aria-label="Search chats">
+    </div>
     <button class="upgrade" onclick="upgrade()">⭐ Upgrade</button>
   </header>
 
@@ -1228,6 +1242,17 @@ document.getElementById("chatSearchInput").addEventListener("input",function(){
     x.style.display=(!q || x.dataset.title.includes(q))?"flex":"none";
   });
 });
+const globalSearchInput = document.getElementById("globalSearchInput");
+if(globalSearchInput){
+  globalSearchInput.addEventListener("input",function(){
+    const q=this.value.toLowerCase().trim();
+    const side=document.getElementById("chatSearchInput");
+    if(side) side.value=this.value;
+    document.querySelectorAll(".recent-chat").forEach(x=>{
+      x.style.display=(!q || x.dataset.title.includes(q))?"flex":"none";
+    });
+  });
+}
 document.getElementById("messageInput").addEventListener("input",function(){
   this.style.height="auto";
   this.style.height=Math.min(this.scrollHeight,150)+"px";
@@ -1259,4 +1284,3 @@ def home():
     page = page.replace("__PROFILE_NAGESH_PROFILE_1__", PROFILE_NAGESH_PROFILE_1)
     page = page.replace("__PROFILE_NAGESH_PROFILE_2__", PROFILE_NAGESH_PROFILE_2)
     return HTMLResponse(page)
-
