@@ -40,7 +40,7 @@ PROFILE_NAGESH_PROFILE_2 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4
 
 CREATOR_REPLY = r"""
 <div class="creator-answer">
-  <div class="creator-title">ನನ್ನನ್ನು <strong>Nagesh Nirale</strong> ಅವರು ಸೃಷ್ಟಿಸಿದ್ದಾರೆ.</div>
+  <div class="creator-title">ನನ್ನನ್ನು <strong>Nagesh Nirale</strong> ಅವರು ರಚಿಸಿದ್ದಾರೆ.</div>
   <div class="creator-profile">
     <div class="creator-name">Nagesh Nirale — Ethical Hacker</div>
     <div class="creator-photos">
@@ -1141,6 +1141,27 @@ async function loadChat(id){
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 }
+function normalizeCreatorAnswer(text){
+  const t=String(text||"");
+  const low=t.toLowerCase();
+  const looksLikeCreator =
+    (low.includes("nagesh nirale") || low.includes("nagesh")) &&
+    (low.includes("create") || low.includes("creator") || low.includes("ರಚ") || low.includes("ಸೃಷ್ಟ") || low.includes("ಮಾಡಿದ"));
+  if(!looksLikeCreator) return t;
+  return `ನನ್ನನ್ನು <strong>Nagesh Nirale</strong> ಅವರು ರಚಿಸಿದ್ದಾರೆ.
+
+<div class="creator-profile">
+  <div class="creator-name">Nagesh Nirale — Ethical Hacker</div>
+  <div class="creator-photos">
+    <img src="__PROFILE_NAGESH_PROFILE_1__" alt="Nagesh Nirale profile photo" onclick="openCreatorPhoto(this.src)">
+  </div>
+  <div class="creator-links">
+    <a href="https://www.instagram.com/armor_728/" target="_blank" rel="noopener noreferrer">📸 Instagram — @armor_728</a>
+    <a href="https://in.linkedin.com/in/nagesh-nirale-256a1b3b4" target="_blank" rel="noopener noreferrer">💼 LinkedIn — Nagesh Nirale</a>
+  </div>
+</div>`;
+}
+
 function addMessage(role,text,scroll=true){
   const row=document.createElement("div");
   row.className="msg-row "+(role==="user"?"user":"assistant");
@@ -1149,6 +1170,7 @@ function addMessage(role,text,scroll=true){
   if(role==="user"){
     msg.textContent=text;
   }else{
+    text=normalizeCreatorAnswer(text);
     msg.innerHTML=marked.parse(text);
     msg.querySelectorAll("pre code").forEach(block=>{
       try{hljs.highlightElement(block)}catch(e){}
@@ -1348,4 +1370,3 @@ def home():
     page = page.replace("__PROFILE_NAGESH_PROFILE_1__", PROFILE_NAGESH_PROFILE_1)
     page = page.replace("__PROFILE_NAGESH_PROFILE_2__", PROFILE_NAGESH_PROFILE_2)
     return HTMLResponse(page)
-
