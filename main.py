@@ -108,6 +108,29 @@ def init_db():
         plan TEXT DEFAULT 'Guest',
         guest_token TEXT
     );
+    CREATE TABLE IF NOT EXISTS library_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        item_type TEXT DEFAULT 'file',
+        content TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS projects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        run_at TEXT NOT NULL,
+        status TEXT DEFAULT 'Scheduled',
+        created_at TEXT NOT NULL
+    );
     """)
     c.commit()
     c.close()
@@ -157,6 +180,19 @@ class ChatBody(BaseModel):
 
 class GoogleBody(BaseModel):
     credential: str
+
+class LibraryBody(BaseModel):
+    name: str
+    item_type: str = "file"
+    content: str = ""
+
+class ProjectBody(BaseModel):
+    name: str
+    description: str = ""
+
+class ScheduleBody(BaseModel):
+    title: str
+    run_at: str
 
 def hash_password(password, salt=None):
     salt = salt or secrets.token_hex(16)
@@ -598,6 +634,68 @@ def chat(body: ChatBody, request: Request):
     r.set_cookie("nirale_guest_id", gtoken, httponly=True, samesite="lax", secure=False, max_age=60*60*24*30)
     return r
 
+@app.get("/api/library")
+def library_list(request: Request):
+    u=get_user(request)
+    if not u: return {"ok":False,"error":"LOGIN_REQUIRED"}
+    c=db(); rows=c.execute("SELECT id,name,item_type,created_at FROM library_items WHERE user_id=? ORDER BY id DESC",(u["id"],)).fetchall(); c.close()
+    return {"ok":True,"items":[dict(x) for x in rows]}
+
+@app.post("/api/library")
+def library_add(body: LibraryBody, request: Request):
+    u=get_user(request)
+    if not u: return {"ok":False,"error":"LOGIN_REQUIRED"}
+    name=body.name.strip()[:180]
+    if not name: return {"ok":False,"error":"File name is required."}
+    c=db(); cur=c.execute("INSERT INTO library_items(user_id,name,item_type,content,created_at) VALUES(?,?,?,?,?)",(u["id"],name,body.item_type,body.content,now())); c.commit(); iid=cur.lastrowid; c.close()
+    return {"ok":True,"id":iid}
+
+@app.delete("/api/library/{item_id}")
+def library_delete(item_id:int, request:Request):
+    u=get_user(request)
+    if not u: return {"ok":False,"error":"LOGIN_REQUIRED"}
+    c=db(); c.execute("DELETE FROM library_items WHERE id=? AND user_id=?",(item_id,u["id"])); c.commit(); c.close(); return {"ok":True}
+
+@app.get("/api/projects")
+def projects_list(request:Request):
+    u=get_user(request)
+    if not u: return {"ok":False,"error":"LOGIN_REQUIRED"}
+    c=db(); rows=c.execute("SELECT id,name,description,created_at FROM projects WHERE user_id=? ORDER BY id DESC",(u["id"],)).fetchall(); c.close(); return {"ok":True,"projects":[dict(x) for x in rows]}
+
+@app.post("/api/projects")
+def projects_add(body:ProjectBody, request:Request):
+    u=get_user(request)
+    if not u: return {"ok":False,"error":"LOGIN_REQUIRED"}
+    name=body.name.strip()[:120]
+    if not name: return {"ok":False,"error":"Project name is required."}
+    c=db(); cur=c.execute("INSERT INTO projects(user_id,name,description,created_at) VALUES(?,?,?,?)",(u["id"],name,body.description.strip()[:500],now())); c.commit(); pid=cur.lastrowid; c.close(); return {"ok":True,"id":pid}
+
+@app.delete("/api/projects/{project_id}")
+def projects_delete(project_id:int, request:Request):
+    u=get_user(request)
+    if not u: return {"ok":False,"error":"LOGIN_REQUIRED"}
+    c=db(); c.execute("DELETE FROM projects WHERE id=? AND user_id=?",(project_id,u["id"])); c.commit(); c.close(); return {"ok":True}
+
+@app.get("/api/scheduled")
+def scheduled_list(request:Request):
+    u=get_user(request)
+    if not u: return {"ok":False,"error":"LOGIN_REQUIRED"}
+    c=db(); rows=c.execute("SELECT id,title,run_at,status,created_at FROM scheduled_tasks WHERE user_id=? ORDER BY run_at ASC",(u["id"],)).fetchall(); c.close(); return {"ok":True,"tasks":[dict(x) for x in rows]}
+
+@app.post("/api/scheduled")
+def scheduled_add(body:ScheduleBody, request:Request):
+    u=get_user(request)
+    if not u: return {"ok":False,"error":"LOGIN_REQUIRED"}
+    title=body.title.strip()[:180]; run_at=body.run_at.strip()[:80]
+    if not title or not run_at: return {"ok":False,"error":"Title and date/time are required."}
+    c=db(); cur=c.execute("INSERT INTO scheduled_tasks(user_id,title,run_at,status,created_at) VALUES(?,?,?,?,?)",(u["id"],title,run_at,"Scheduled",now())); c.commit(); tid=cur.lastrowid; c.close(); return {"ok":True,"id":tid}
+
+@app.delete("/api/scheduled/{task_id}")
+def scheduled_delete(task_id:int, request:Request):
+    u=get_user(request)
+    if not u: return {"ok":False,"error":"LOGIN_REQUIRED"}
+    c=db(); c.execute("DELETE FROM scheduled_tasks WHERE id=? AND user_id=?",(task_id,u["id"])); c.commit(); c.close(); return {"ok":True}
+
 @app.get("/api/admin/users")
 def admin_users(request: Request):
     u = get_user(request)
@@ -719,6 +817,18 @@ button{cursor:pointer}
 .plus-item{display:block;width:100%;border:0;background:transparent;text-align:left;padding:11px;border-radius:9px}
 .plus-item:hover{background:#f1f1f1}
 .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.48);z-index:999}
+/* Nirale AI continuous full-screen block */
+html,body{background:#ffffff!important}
+.app{position:fixed!important;inset:0!important;width:100vw!important;height:100dvh!important;min-height:100dvh!important;display:flex!important;overflow:hidden!important;background:#e9e9e9!important;border:2px solid #bdbdbd!important;box-shadow:0 0 0 1px #8f8f8f!important}
+.main{height:100dvh!important;min-height:100dvh!important;overflow:hidden!important;background:#e9e9e9!important;border:0!important}
+.header,.chatbox,.footer{background:#e9e9e9!important}
+.header{border-bottom:1px solid #cfcfcf!important}
+.chatbox{min-height:0!important}
+.footer{border-top:1px solid #cfcfcf!important}
+.sidebar{height:100dvh!important;min-height:100dvh!important}
+.workspace-overlay{display:none;position:fixed;inset:0;z-index:4500;background:rgba(0,0,0,.5);align-items:center;justify-content:center;padding:18px}
+.workspace-overlay.open{display:flex}.workspace-card{width:min(900px,96vw);height:min(720px,92dvh);background:#fff;border-radius:18px;display:flex;flex-direction:column;box-shadow:0 20px 70px rgba(0,0,0,.3);overflow:hidden}.workspace-head{height:60px;flex:0 0 60px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;border-bottom:1px solid #ddd}.workspace-head h2{margin:0;font-size:20px}.workspace-head button{border:0;background:#eee;border-radius:50%;width:36px;height:36px;font-size:22px}.workspace-body{flex:1;overflow:auto;padding:18px}.workspace-empty{padding:35px 10px;text-align:center;color:#666}.workspace-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.workspace-btn{border:1px solid #bbb;background:#111;color:#fff;border-radius:9px;padding:9px 13px}.workspace-btn.secondary{background:#fff;color:#111}.workspace-item{border:1px solid #ddd;border-radius:12px;padding:12px;margin:8px 0;display:flex;align-items:center;gap:10px}.workspace-item-main{flex:1;min-width:0}.workspace-item-name{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workspace-item-meta{font-size:12px;color:#777;margin-top:4px}.workspace-danger{border:1px solid #ddd;background:#fff;border-radius:8px;padding:7px 10px}.code-workspace{width:100%;height:430px;border:1px solid #bbb;border-radius:12px;padding:12px;font-family:ui-monospace,monospace;resize:vertical}.workspace-input{width:100%;height:44px;border:1px solid #bbb;border-radius:10px;padding:0 12px;margin:6px 0}.workspace-textarea{width:100%;min-height:90px;border:1px solid #bbb;border-radius:10px;padding:10px;margin:6px 0;resize:vertical}
+@media(max-width:700px){.workspace-overlay{padding:0}.workspace-card{width:100vw;height:100dvh;border-radius:0}.sidebar{width:100vw;flex-basis:100vw}.sidebar.closed{width:0;flex-basis:0}.overlay.open{display:block}}
 .auth{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;align-items:center;justify-content:center;padding:18px}
 .auth.open{display:flex}
 .auth-card{width:100%;max-width:400px;background:#fff;border-radius:18px;padding:24px;box-shadow:0 15px 50px rgba(0,0,0,.25)}
@@ -889,12 +999,12 @@ body { box-sizing:border-box !important; }
   </div>
 
   <div class="menu-list">
-    <button class="menu-item" onclick="showInfo('Library')">▣ <span>Library</span></button>
-    <button class="menu-item" onclick="showInfo('Projects')">▦ <span>Projects</span></button>
-    <button class="menu-item" onclick="showInfo('Scheduled')">◷ <span>Scheduled</span></button>
-    <button class="menu-item" onclick="showInfo('Plugins')">⊞ <span>Plugins</span></button>
-    <button class="menu-item" onclick="showInfo('Codex / Code')">⌘ <span>Codex / Code</span></button>
-    <button class="menu-item" onclick="showInfo('More')">••• <span>More</span></button>
+    <button class="menu-item" onclick="openWorkspace('Library')">▣ <span>Library</span></button>
+    <button class="menu-item" onclick="openWorkspace('Projects')">▦ <span>Projects</span></button>
+    <button class="menu-item" onclick="openWorkspace('Scheduled')">◷ <span>Scheduled</span></button>
+    <button class="menu-item" onclick="openWorkspace('Plugins')">⊞ <span>Plugins</span></button>
+    <button class="menu-item" onclick="openWorkspace('Codex / Code')">⌘ <span>Codex / Code</span></button>
+    <button class="menu-item" onclick="openWorkspace('More')">••• <span>More</span></button>
   </div>
 
   <div class="recents-title">Recents</div>
@@ -933,7 +1043,7 @@ body { box-sizing:border-box !important; }
     <button class="plus-item" onclick="document.getElementById('cameraInput').click()">📷 Camera</button>
     <button class="plus-item" onclick="document.getElementById('photoInput').click()">🖼️ Photos / Gallery</button>
     <button class="plus-item" onclick="webSearch()">🌐 Web search</button>
-    <button class="plus-item" onclick="showInfo('Create image')">🎨 Create image</button>
+    <button class="plus-item" onclick="openWorkspace('Create image')">🎨 Create image</button>
     <button class="plus-item" onclick="openMap()">📍 Map</button>
   </div>
 
@@ -941,7 +1051,7 @@ body { box-sizing:border-box !important; }
     <div id="photoPending" class="photo-pending"><img id="photoPendingImg"><div id="photoPendingName" class="photo-pending-name"></div><button class="photo-remove" onclick="removePendingPhoto()">×</button></div>
     <div class="composer">
       <button class="round" onclick="togglePlus()" aria-label="Attach">＋</button>
-      <textarea id="messageInput" rows="1" placeholder="Message Nirale AI..." onkeydown="handleKey(event)"></textarea>
+      <textarea id="messageInput" rows="1" placeholder="Ask anything..." onkeydown="handleKey(event)"></textarea>
       <button id="micBtn" class="round" onclick="voiceInput()" aria-label="Voice">🎙️</button>
       <button class="round send" onclick="sendMessage()" aria-label="Send">➤</button>
     </div>
@@ -970,6 +1080,13 @@ body { box-sizing:border-box !important; }
    <div class="auth-switch" id="authSwitch">
      Don't have an account? <a onclick="switchAuth('signup')">Create account</a>
    </div>
+ </div>
+</div>
+
+<div id="workspace" class="workspace-overlay" onclick="workspaceBackdrop(event)">
+ <div class="workspace-card" onclick="event.stopPropagation()">
+  <div class="workspace-head"><h2 id="workspaceTitle">Library</h2><button onclick="closeWorkspace()">×</button></div>
+  <div id="workspaceBody" class="workspace-body"></div>
  </div>
 </div>
 
@@ -1043,10 +1160,58 @@ function removePendingPhoto(){
   document.getElementById("photoPendingImg").removeAttribute("src");
 }
 
-function showInfo(name){
+function closeWorkspace(){document.getElementById("workspace").classList.remove("open");}
+function workspaceBackdrop(e){if(e.target.id==="workspace") closeWorkspace();}
+async function openWorkspace(name){
   plusMenu.classList.remove("open");
-  alert(name + " is ready for Nirale AI.");
+  const modal=document.getElementById("workspace"), title=document.getElementById("workspaceTitle"), body=document.getElementById("workspaceBody");
+  title.textContent=name; modal.classList.add("open"); body.innerHTML='<div class="workspace-empty">Loading...</div>';
+  if(name==="Library") return renderLibrary();
+  if(name==="Projects") return renderProjects();
+  if(name==="Scheduled") return renderScheduled();
+  if(name==="Plugins") return renderPlugins();
+  if(name==="Codex / Code") return renderCodex();
+  if(name==="More") return renderMore();
+  if(name==="Create image") return renderCreateImage();
 }
+async function requireLoginForWorkspace(){
+  const me=await fetch("/api/me").then(r=>r.json()).catch(()=>({logged_in:false}));
+  if(!me.logged_in){closeWorkspace();openAuth("login");return false;} return true;
+}
+async function renderLibrary(){
+  const body=document.getElementById("workspaceBody");
+  const d=await fetch("/api/library").then(r=>r.json());
+  if(!d.ok){body.innerHTML='<div class="workspace-empty">Login ಮಾಡಿ Library ಬಳಸಬಹುದು.</div>';return;}
+  body.innerHTML='<div class="workspace-toolbar"><button class="workspace-btn" onclick="document.getElementById('libraryPicker').click()">＋ Add file</button><input id="libraryPicker" type="file" hidden></div><div id="libraryList"></div>';
+  document.getElementById("libraryPicker").onchange=async e=>{const f=e.target.files[0];if(!f)return; const text=f.type.startsWith("text/")?await f.text():""; await fetch("/api/library",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:f.name,item_type:f.type||"file",content:text.slice(0,200000)})}); renderLibrary();};
+  const list=document.getElementById("libraryList"); list.innerHTML=(d.items||[]).map(x=>`<div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">📄 ${escapeHtml(x.name)}</div><div class="workspace-item-meta">${escapeHtml(x.item_type)} · ${escapeHtml(x.created_at)}</div></div><button class="workspace-danger" onclick="deleteLibrary(${x.id})">Delete</button></div>`).join("")||'<div class="workspace-empty">Library empty.</div>';
+}
+async function deleteLibrary(id){await fetch("/api/library/"+id,{method:"DELETE"});renderLibrary();}
+async function renderProjects(){
+  const body=document.getElementById("workspaceBody"); const d=await fetch("/api/projects").then(r=>r.json());
+  if(!d.ok){body.innerHTML='<div class="workspace-empty">Login ಮಾಡಿ Projects ಬಳಸಬಹುದು.</div>';return;}
+  body.innerHTML='<div class="workspace-toolbar"><button class="workspace-btn" onclick="createProject()">＋ New project</button></div><div id="projectList"></div>';
+  document.getElementById("projectList").innerHTML=(d.projects||[]).map(x=>`<div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">▦ ${escapeHtml(x.name)}</div><div class="workspace-item-meta">${escapeHtml(x.description||"No description")}</div></div><button class="workspace-danger" onclick="deleteProject(${x.id})">Delete</button></div>`).join("")||'<div class="workspace-empty">No projects yet.</div>';
+}
+async function createProject(){const name=prompt("Project name");if(!name)return;const description=prompt("Project description (optional)")||"";await fetch("/api/projects",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,description})});renderProjects();}
+async function deleteProject(id){await fetch("/api/projects/"+id,{method:"DELETE"});renderProjects();}
+async function renderScheduled(){
+  const body=document.getElementById("workspaceBody"); const d=await fetch("/api/scheduled").then(r=>r.json());
+  if(!d.ok){body.innerHTML='<div class="workspace-empty">Login ಮಾಡಿ Scheduled ಬಳಸಬಹುದು.</div>';return;}
+  body.innerHTML='<div class="workspace-toolbar"><button class="workspace-btn" onclick="createSchedule()">＋ Schedule</button></div><div id="scheduleList"></div>';
+  document.getElementById("scheduleList").innerHTML=(d.tasks||[]).map(x=>`<div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">◷ ${escapeHtml(x.title)}</div><div class="workspace-item-meta">${escapeHtml(x.run_at)} · ${escapeHtml(x.status)}</div></div><button class="workspace-danger" onclick="deleteSchedule(${x.id})">Delete</button></div>`).join("")||'<div class="workspace-empty">No scheduled tasks.</div>';
+}
+async function createSchedule(){const title=prompt("What should Nirale AI remind you about?");if(!title)return;const run_at=prompt("Date/time (example: 2026-09-10 18:00)");if(!run_at)return;await fetch("/api/scheduled",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title,run_at})});renderScheduled();}
+async function deleteSchedule(id){await fetch("/api/scheduled/"+id,{method:"DELETE"});renderScheduled();}
+function renderPlugins(){document.getElementById("workspaceBody").innerHTML='<div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">🌐 Web Search</div><div class="workspace-item-meta">Search the web in a new tab.</div></div><button class="workspace-btn" onclick="webSearch();closeWorkspace()">Open</button></div><div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">📍 Maps</div><div class="workspace-item-meta">Open Google Maps for your current query.</div></div><button class="workspace-btn" onclick="openMap();closeWorkspace()">Open</button></div><div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">🧩 Plugins</div><div class="workspace-item-meta">Plugin connections can be added later without changing your chat.</div></div></div>';}
+function renderCodex(){document.getElementById("workspaceBody").innerHTML='<p><b>Codex / Code</b></p><textarea id="codeWorkspace" class="code-workspace" placeholder="Write or paste code here..."></textarea><div class="workspace-toolbar" style="margin-top:10px"><button class="workspace-btn" onclick="askCodeToNirale()">Ask Nirale AI</button><button class="workspace-btn secondary" onclick="downloadWorkspaceCode()">Download code</button></div>';}
+function askCodeToNirale(){const code=document.getElementById("codeWorkspace").value;if(!code)return;closeWorkspace();input.value="Explain/fix this code:
+```
+"+code+"
+```";sendMessage();}
+function downloadWorkspaceCode(){const code=document.getElementById("codeWorkspace").value;const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([code],{type:"text/plain"}));a.download="nirale-code.txt";a.click();}
+function renderMore(){document.getElementById("workspaceBody").innerHTML='<div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">⚙️ Settings</div><div class="workspace-item-meta">Account and chat controls are available from the account menu.</div></div></div><div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">🆕 New Chat</div><div class="workspace-item-meta">Start a clean conversation.</div></div><button class="workspace-btn" onclick="closeWorkspace();newChat()">Open</button></div>';}
+function renderCreateImage(){document.getElementById("workspaceBody").innerHTML='<div class="workspace-empty"><h3>Create image</h3><p>Describe the image you want in the chat composer, then send it to Nirale AI.</p><button class="workspace-btn" onclick="closeWorkspace();input.focus()">Back to chat</button></div>';}
 function webSearch(){
   const q = input.value.trim();
   window.open("https://www.google.com/search?q="+encodeURIComponent(q || "Nirale AI"), "_blank");
@@ -1383,6 +1548,9 @@ function voiceInput(){
   };
   rec.start();
 }
+document.getElementById("photoInput").addEventListener("change",function(){handleSelectedFile(this.files[0],"photo");this.value="";});
+document.getElementById("cameraInput").addEventListener("change",function(){handleSelectedFile(this.files[0],"photo");this.value="";});
+document.getElementById("fileInput").addEventListener("change",function(){handleSelectedFile(this.files[0],"file");this.value="";});
 document.getElementById("chatSearchInput").addEventListener("input",function(){
   const q=this.value.toLowerCase().trim();
   document.querySelectorAll(".recent-chat").forEach(x=>{
