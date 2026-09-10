@@ -984,16 +984,21 @@ body { box-sizing:border-box !important; }
 }
 </style>
 <style>
-/* HARD FULL-SCREEN NIRALE BLOCK */
+/* FULL-SCREEN WHITE NIRALE BLOCK */
 *,*::before,*::after{box-sizing:border-box!important}
-html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;min-height:100%!important;background:#d9d9d9!important}
-body{overflow:hidden!important}
-.app{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;min-height:100vh!important;min-height:100dvh!important;margin:0!important;padding:0!important;display:flex!important;overflow:hidden!important;background:#d9d9d9!important}
-.main{position:relative!important;flex:1 1 auto!important;width:100%!important;height:100%!important;min-height:100%!important;margin:0!important;padding:0!important;display:flex!important;flex-direction:column!important;overflow:hidden!important;background:#eeeeee!important;border:3px solid #b8b8b8!important}
-.header{flex:0 0 60px!important;width:100%!important;margin:0!important}
-.chatbox{flex:1 1 auto!important;width:100%!important;min-height:0!important;margin:0!important;overflow-y:auto!important;background:#eeeeee!important}
-.footer{flex:0 0 auto!important;width:100%!important;margin:0!important;background:#e7e7e7!important}
-@media(max-width:700px){.app{height:100dvh!important}.main{height:100dvh!important;border:0!important}.header{flex-basis:58px!important;height:58px!important}}
+html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;min-height:100%!important;background:#ffffff!important}
+body{overflow:hidden!important;background:#ffffff!important}
+.app{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;min-height:100vh!important;min-height:100dvh!important;margin:0!important;padding:0!important;display:flex!important;overflow:hidden!important;background:#ffffff!important}
+.main{position:relative!important;flex:1 1 auto!important;width:100%!important;height:100%!important;min-height:100%!important;margin:0!important;padding:0!important;display:flex!important;flex-direction:column!important;overflow:hidden!important;background:#ffffff!important;border:0!important;border-radius:0!important}
+.header{flex:0 0 60px!important;width:100%!important;height:60px!important;margin:0!important;background:#ffffff!important}
+.chatbox{flex:1 1 auto!important;width:100%!important;min-height:0!important;margin:0!important;overflow-y:auto!important;background:#ffffff!important}
+.footer{flex:0 0 auto!important;width:100%!important;margin:0!important;background:#ffffff!important}
+.sidebar{background:#ffffff!important}
+.sidebar *{background-color:transparent}
+.sidebar-search{background:#ffffff!important}
+.sidebar-search input{background:#ffffff!important}
+.menu-list,.menu-item,.new-chat,.sidebar-top,.side-head{background:#ffffff!important}
+@media(max-width:700px){.app{width:100vw!important;height:100dvh!important}.main{width:100vw!important;height:100dvh!important;border:0!important}.header{flex-basis:58px!important;height:58px!important}.chatbox{background:#ffffff!important}.footer{background:#ffffff!important}}
 </style>
 </head>
 <body>
