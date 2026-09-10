@@ -983,6 +983,18 @@ body { box-sizing:border-box !important; }
   .footer { width:100% !important; background:#e1e1e1 !important; }
 }
 </style>
+<style>
+/* HARD FULL-SCREEN NIRALE BLOCK */
+*,*::before,*::after{box-sizing:border-box!important}
+html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;min-height:100%!important;background:#d9d9d9!important}
+body{overflow:hidden!important}
+.app{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;min-height:100vh!important;min-height:100dvh!important;margin:0!important;padding:0!important;display:flex!important;overflow:hidden!important;background:#d9d9d9!important}
+.main{position:relative!important;flex:1 1 auto!important;width:100%!important;height:100%!important;min-height:100%!important;margin:0!important;padding:0!important;display:flex!important;flex-direction:column!important;overflow:hidden!important;background:#eeeeee!important;border:3px solid #b8b8b8!important}
+.header{flex:0 0 60px!important;width:100%!important;margin:0!important}
+.chatbox{flex:1 1 auto!important;width:100%!important;min-height:0!important;margin:0!important;overflow-y:auto!important;background:#eeeeee!important}
+.footer{flex:0 0 auto!important;width:100%!important;margin:0!important;background:#e7e7e7!important}
+@media(max-width:700px){.app{height:100dvh!important}.main{height:100dvh!important;border:0!important}.header{flex-basis:58px!important;height:58px!important}}
+</style>
 </head>
 <body>
 <div class="app">
@@ -1182,7 +1194,7 @@ async function renderLibrary(){
   const body=document.getElementById("workspaceBody");
   const d=await fetch("/api/library").then(r=>r.json());
   if(!d.ok){body.innerHTML='<div class="workspace-empty">Login ಮಾಡಿ Library ಬಳಸಬಹುದು.</div>';return;}
-  body.innerHTML='<div class="workspace-toolbar"><button class="workspace-btn" onclick="document.getElementById('libraryPicker').click()">＋ Add file</button><input id="libraryPicker" type="file" hidden></div><div id="libraryList"></div>';
+  body.innerHTML=`<div class="workspace-toolbar"><button class="workspace-btn" onclick="document.getElementById('libraryPicker').click()">＋ Add file</button><input id="libraryPicker" type="file" hidden></div><div id="libraryList"></div>`;
   document.getElementById("libraryPicker").onchange=async e=>{const f=e.target.files[0];if(!f)return; const text=f.type.startsWith("text/")?await f.text():""; await fetch("/api/library",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:f.name,item_type:f.type||"file",content:text.slice(0,200000)})}); renderLibrary();};
   const list=document.getElementById("libraryList"); list.innerHTML=(d.items||[]).map(x=>`<div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">📄 ${escapeHtml(x.name)}</div><div class="workspace-item-meta">${escapeHtml(x.item_type)} · ${escapeHtml(x.created_at)}</div></div><button class="workspace-danger" onclick="deleteLibrary(${x.id})">Delete</button></div>`).join("")||'<div class="workspace-empty">Library empty.</div>';
 }
@@ -1205,10 +1217,13 @@ async function createSchedule(){const title=prompt("What should Nirale AI remind
 async function deleteSchedule(id){await fetch("/api/scheduled/"+id,{method:"DELETE"});renderScheduled();}
 function renderPlugins(){document.getElementById("workspaceBody").innerHTML='<div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">🌐 Web Search</div><div class="workspace-item-meta">Search the web in a new tab.</div></div><button class="workspace-btn" onclick="webSearch();closeWorkspace()">Open</button></div><div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">📍 Maps</div><div class="workspace-item-meta">Open Google Maps for your current query.</div></div><button class="workspace-btn" onclick="openMap();closeWorkspace()">Open</button></div><div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">🧩 Plugins</div><div class="workspace-item-meta">Plugin connections can be added later without changing your chat.</div></div></div>';}
 function renderCodex(){document.getElementById("workspaceBody").innerHTML='<p><b>Codex / Code</b></p><textarea id="codeWorkspace" class="code-workspace" placeholder="Write or paste code here..."></textarea><div class="workspace-toolbar" style="margin-top:10px"><button class="workspace-btn" onclick="askCodeToNirale()">Ask Nirale AI</button><button class="workspace-btn secondary" onclick="downloadWorkspaceCode()">Download code</button></div>';}
-function askCodeToNirale(){const code=document.getElementById("codeWorkspace").value;if(!code)return;closeWorkspace();input.value="Explain/fix this code:
-```
-"+code+"
-```";sendMessage();}
+function askCodeToNirale(){
+  const code=document.getElementById("codeWorkspace").value.trim();
+  if(!code) return;
+  closeWorkspace();
+  input.value = "Explain/fix this code:\\n\\n```\\n" + code + "\\n```";
+  sendMessage();
+}
 function downloadWorkspaceCode(){const code=document.getElementById("codeWorkspace").value;const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([code],{type:"text/plain"}));a.download="nirale-code.txt";a.click();}
 function renderMore(){document.getElementById("workspaceBody").innerHTML='<div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">⚙️ Settings</div><div class="workspace-item-meta">Account and chat controls are available from the account menu.</div></div></div><div class="workspace-item"><div class="workspace-item-main"><div class="workspace-item-name">🆕 New Chat</div><div class="workspace-item-meta">Start a clean conversation.</div></div><button class="workspace-btn" onclick="closeWorkspace();newChat()">Open</button></div>';}
 function renderCreateImage(){document.getElementById("workspaceBody").innerHTML='<div class="workspace-empty"><h3>Create image</h3><p>Describe the image you want in the chat composer, then send it to Nirale AI.</p><button class="workspace-btn" onclick="closeWorkspace();input.focus()">Back to chat</button></div>';}
