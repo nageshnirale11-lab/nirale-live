@@ -1000,6 +1000,31 @@ body{overflow:hidden!important;background:#ffffff!important}
 .menu-list,.menu-item,.new-chat,.sidebar-top,.side-head{background:#ffffff!important}
 @media(max-width:700px){.app{width:100vw!important;height:100dvh!important}.main{width:100vw!important;height:100dvh!important;border:0!important}.header{flex-basis:58px!important;height:58px!important}.chatbox{background:#ffffff!important}.footer{background:#ffffff!important}}
 </style>
+<style>
+/* Sidebar white-theme visibility + reliable close button */
+.sidebar{background:#fff!important;color:#222!important;}
+.sidebar .side-head{background:#fff!important;}
+.sidebar .brand{color:#222!important;}
+.sidebar .icon-btn{color:#111!important;background:#fff!important;cursor:pointer!important;pointer-events:auto!important;z-index:7001!important;}
+.sidebar .icon-btn:hover{background:#eee!important;}
+.sidebar .menu-item{color:#222!important;background:#fff!important;}
+.sidebar .menu-item:hover{background:#f0f0f0!important;}
+.sidebar .new-chat{color:#222!important;background:#fff!important;border-color:#bbb!important;}
+.sidebar .recents-title{color:#666!important;}
+.sidebar .recent-chat{color:#222!important;}
+.sidebar .recent-more{color:#555!important;}
+.sidebar .account{border-top-color:#ddd!important;}
+.sidebar .account-btn{color:#222!important;}
+.sidebar .account-plan{color:#666!important;}
+@media(min-width:701px){
+  .sidebar.closed{width:0!important;flex-basis:0!important;min-width:0!important;overflow:hidden!important;}
+  .sidebar.open{width:320px!important;flex-basis:320px!important;}
+}
+@media(max-width:700px){
+  .sidebar.closed{transform:translateX(-100%)!important;width:100vw!important;flex-basis:100vw!important;}
+  .sidebar.open{transform:translateX(0)!important;width:100vw!important;flex-basis:100vw!important;}
+}
+</style>
 </head>
 <body>
 <div class="app">
