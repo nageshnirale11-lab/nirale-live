@@ -1025,6 +1025,9 @@ body{overflow:hidden!important;background:#ffffff!important}
   .sidebar.open{transform:translateX(0)!important;width:100vw!important;flex-basis:100vw!important;}
 }
 </style>
+    <meta name="description" content="Nirale AI - AI assistant for chat, coding and more.">
+    <meta name="robots" content="index, follow">
+    <meta name="google-site-verification" content="">
 </head>
 <body>
 <div class="app">
