@@ -1027,7 +1027,6 @@ body{overflow:hidden!important;background:#ffffff!important}
 </style>
     <meta name="description" content="Nirale AI - AI assistant for chat, coding and more.">
     <meta name="robots" content="index, follow">
-    <meta name="google-site-verification" content="">
 <meta name="google-site-verification" content="Hiv4enNntRADnOzq5yEVQojy4efuS7PdhBUfIwmAMFk" />
 </head>
 <body>
